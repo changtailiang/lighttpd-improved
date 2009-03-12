@@ -4,3 +4,4 @@
   * mod_cache added
   * mod_mem_cache added
   * "tests" directory removed
+  * uses share buffer for mod_mem_cache for better memory management
