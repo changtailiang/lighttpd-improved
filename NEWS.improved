@@ -1,0 +1,6 @@
+2009-03-12
+
+  * initial import lighttpd 1.4.22
+  * mod_cache added
+  * mod_mem_cache added
+  * "tests" directory removed
