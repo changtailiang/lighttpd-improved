@@ -215,6 +215,12 @@ mod_magnet_la_OBJECTS = $(am_mod_magnet_la_OBJECTS)
 mod_magnet_la_LINK = $(LIBTOOL) --tag=CC $(AM_LIBTOOLFLAGS) \
 	$(LIBTOOLFLAGS) --mode=link $(CCLD) $(mod_magnet_la_CFLAGS) \
 	$(CFLAGS) $(mod_magnet_la_LDFLAGS) $(LDFLAGS) -o $@
+mod_mem_cache_la_DEPENDENCIES = $(am__DEPENDENCIES_2)
+am_mod_mem_cache_la_OBJECTS = mod_mem_cache.lo
+mod_mem_cache_la_OBJECTS = $(am_mod_mem_cache_la_OBJECTS)
+mod_mem_cache_la_LINK = $(LIBTOOL) --tag=CC $(AM_LIBTOOLFLAGS) \
+	$(LIBTOOLFLAGS) --mode=link $(CCLD) $(AM_CFLAGS) $(CFLAGS) \
+	$(mod_mem_cache_la_LDFLAGS) $(LDFLAGS) -o $@
 mod_mysql_vhost_la_DEPENDENCIES = $(am__DEPENDENCIES_1) \
 	$(am__DEPENDENCIES_2)
 am_mod_mysql_vhost_la_OBJECTS = mod_mysql_vhost_la-mod_mysql_vhost.lo
@@ -396,7 +402,7 @@ LINK = $(LIBTOOL) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) \
 SOURCES = $(liblightcomp_la_SOURCES) $(mod_access_la_SOURCES) \
 	$(mod_accesslog_la_SOURCES) $(mod_alias_la_SOURCES) \
 	$(mod_auth_la_SOURCES) $(mod_cache_la_SOURCES) \
-	$(mod_cgi_la_SOURCES) \
+	$(mod_cgi_la_SOURCES) $(mod_mem_cache_la_SOURCES) \
 	$(mod_compress_la_SOURCES) $(mod_dirlisting_la_SOURCES) \
 	$(mod_evasive_la_SOURCES) $(mod_evhost_la_SOURCES) \
 	$(mod_expire_la_SOURCES) $(mod_extforward_la_SOURCES) \
@@ -416,7 +422,7 @@ DIST_SOURCES = $(am__liblightcomp_la_SOURCES_DIST) \
 	$(mod_access_la_SOURCES) $(mod_accesslog_la_SOURCES) \
 	$(mod_alias_la_SOURCES) $(mod_auth_la_SOURCES) \
 	$(mod_cache_la_SOURCES) $(mod_cgi_la_SOURCES) \
-	$(mod_compress_la_SOURCES) \
+	$(mod_compress_la_SOURCES) $(mod_mem_cache_la_SOURCES) \
 	$(mod_dirlisting_la_SOURCES) $(mod_evasive_la_SOURCES) \
 	$(mod_evhost_la_SOURCES) $(mod_expire_la_SOURCES) \
 	$(mod_extforward_la_SOURCES) $(mod_fastcgi_la_SOURCES) \
@@ -611,7 +617,7 @@ spawn_fcgi_SOURCES = spawn-fcgi.c
 #mod_httptls_la_LIBADD = $(common_libadd)
 lib_LTLIBRARIES = $(am__append_1) mod_flv_streaming.la mod_evasive.la \
 	mod_webdav.la mod_magnet.la mod_trigger_b4_dl.la \
-	mod_cache.la mod_mysql_vhost.la mod_cgi.la mod_scgi.la \
+	mod_cache.la mod_mem_cache.la mod_mysql_vhost.la mod_cgi.la mod_scgi.la \
 	mod_staticfile.la mod_dirlisting.la mod_indexfile.la \
 	mod_setenv.la mod_alias.la mod_userdir.la mod_rrdtool.la \
 	mod_usertrack.la mod_proxy.la mod_ssi.la mod_secdownload.la \
@@ -644,6 +650,9 @@ mod_trigger_b4_dl_la_LIBADD = $(GDBM_LIB) $(MEMCACHE_LIB) $(PCRE_LIB) $(common_l
 mod_cache_la_SOURCES = mod_cache.c
 mod_cache_la_LDFLAGS = -module -export-dynamic -avoid-version -no-undefined
 mod_cache_la_LIBADD = $(common_libadd)
+mod_mem_cache_la_SOURCES = mod_mem_cache.c
+mod_mem_cache_la_LDFLAGS = -module -export-dynamic -avoid-version -no-undefined
+mod_mem_cache_la_LIBADD = $(common_libadd)
 mod_mysql_vhost_la_SOURCES = mod_mysql_vhost.c
 mod_mysql_vhost_la_LDFLAGS = -module -export-dynamic -avoid-version -no-undefined
 mod_mysql_vhost_la_LIBADD = $(MYSQL_LIBS) $(common_libadd)
@@ -711,6 +720,9 @@ mod_compress_la_LIBADD = $(Z_LIB) $(BZ_LIB) $(common_libadd)
 mod_cache_la_SOURCES = mod_cache.c
 mod_cache_la_LDFLAGS = -module -export-dynamic -avoid-version -no-undefined
 mod_cache_la_LIBADD = $(common_libadd)
+mod_mem_cache_la_SOURCES = mod_mem_cache.c
+mod_mem_cache_la_LDFLAGS = -module -export-dynamic -avoid-version -no-undefined
+mod_mem_cache_la_LIBADD = $(common_libadd)
 mod_auth_la_SOURCES = mod_auth.c http_auth_digest.c http_auth.c
 mod_auth_la_LDFLAGS = -module -export-dynamic -avoid-version -no-undefined
 mod_auth_la_LIBADD = $(CRYPT_LIB) $(LDAP_LIB) $(LBER_LIB) $(common_libadd)
@@ -856,6 +868,8 @@ mod_indexfile.la: $(mod_indexfile_la_OBJECTS) $(mod_indexfile_la_DEPENDENCIES)
 	$(mod_indexfile_la_LINK) -rpath $(libdir) $(mod_indexfile_la_OBJECTS) $(mod_indexfile_la_LIBADD) $(LIBS)
 mod_magnet.la: $(mod_magnet_la_OBJECTS) $(mod_magnet_la_DEPENDENCIES) 
 	$(mod_magnet_la_LINK) -rpath $(libdir) $(mod_magnet_la_OBJECTS) $(mod_magnet_la_LIBADD) $(LIBS)
+mod_mem_cache.la: $(mod_mem_cache_la_OBJECTS) $(mod_mem_cache_la_DEPENDENCIES) 
+	$(mod_mem_cache_la_LINK) -rpath $(libdir) $(mod_mem_cache_la_OBJECTS) $(mod_mem_cache_la_LIBADD) $(LIBS)
 mod_mysql_vhost.la: $(mod_mysql_vhost_la_OBJECTS) $(mod_mysql_vhost_la_DEPENDENCIES) 
 	$(mod_mysql_vhost_la_LINK) -rpath $(libdir) $(mod_mysql_vhost_la_OBJECTS) $(mod_mysql_vhost_la_LIBADD) $(LIBS)
 mod_proxy.la: $(mod_proxy_la_OBJECTS) $(mod_proxy_la_DEPENDENCIES) 
@@ -1064,6 +1078,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/mod_indexfile.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/mod_magnet_la-mod_magnet.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/mod_magnet_la-mod_magnet_cache.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/mod_mem_cache.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/mod_mysql_vhost_la-mod_mysql_vhost.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/mod_proxy.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/mod_redirect.Plo@am__quote@
