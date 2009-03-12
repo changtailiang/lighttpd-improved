@@ -30,8 +30,9 @@ SUCH DAMAGE.
 #include <string.h>
 #include <fcntl.h>
 #include <errno.h>
-#include <assert.h>
 #include <unistd.h>
+#include <sys/mman.h>
+#include <stdint.h>
 
 #include "base.h"
 #include "log.h"
@@ -44,8 +45,7 @@ SUCH DAMAGE.
 #include "response.h"
 #include "status_counter.h"
 
-
-#define LIGHTTPD_V14 1
+#include "version.h"
 
 #ifdef LIGHTTPD_V14
 #include "splaytree.h"
@@ -59,25 +59,36 @@ SUCH DAMAGE.
 #define CONFIG_MEM_CACHE_FILE_TYPES "mem-cache.filetypes"
 #define CONFIG_MEM_CACHE_SLRU_THRESOLD "mem-cache.slru-thresold"
 
-typedef struct {
+#define MEMCACHE_USED "mem-cache.used-memory(MB)"
+#define MEMCACHE_ITEMS "mem-cache.cached-items"
+#define MEMCACHE_HITRATE "mem-cache.hitrate(%)"
+
+typedef struct
+{
 	/* number of cache items removed by lru when memory is full */
 	unsigned short lru_remove_count;
 	unsigned short enable;
 	short thresold;
-	off_t maxmemory; /* maxium total used memory in MB */
+	uint32_t maxmemory; /* maxium total used memory in MB */
 	off_t maxfilesize; /* maxium file size will put into memory */
 	unsigned int expires;
 	array  *filetypes;
 } plugin_config;
 
-#define MEM_CACHE_NUM 524288 /* 2^19 */
-#define LRUDEBUG 0
+#define CACHE_SIZE 1048576 /* 2^20, 1M */
+#define CACHE_MASK (CACHE_SIZE-1)
 
 static int lruheader, lruend;
-static unsigned long reqcount, reqhit, cachenumber;
+static uint64_t reqcount, reqhit;
+static uint32_t cachenumber;
 
 #ifdef LIGHTTPD_V15
-typedef struct tree_node {
+data_integer *memcache_used;
+data_integer *memcache_items;
+data_integer *memcache_hitrate;
+
+typedef struct tree_node
+{
     struct tree_node * left, * right;
     int key;
     int size;   /* maintained to be the number of nodes rooted here */
@@ -85,15 +96,10 @@ typedef struct tree_node {
     void *data;
 } splay_tree;
 
-#define splaytree_size(x) (((x)==NULL) ? 0 : ((x)->size))
-
 #endif
-/* This macro returns the size of a node.  Unlike "x->size",     */
-/* it works even if x=NULL.  The test could be avoided by using  */
-/* a special version of NULL which was a real node with size 0.  */
-
 /* use hash idea as danga's memcached */
-struct cache_entry{
+struct cache_entry
+{
 	short inuse;
 	/* cache data */
 	buffer *content;
@@ -115,21 +121,25 @@ struct cache_entry{
 	buffer *content_type;
 	/* etag */
 	buffer *etag;
+
+	unsigned int hash;
 }; 
 
 static struct cache_entry *memcache;
 
-static float usedmemory = 0;
+static unsigned long long usedmemory = 0; /* to support > 4G memory */
 
 /* probation lru splaytree */
 splay_tree *plru;
 /* structure to store probation lru info */
-struct probation {
+struct probation
+{
 	time_t startts;
 	int count;
 };
 
-typedef struct {
+typedef struct
+{
 	PLUGIN_DATA;
 	
 	plugin_config **config_storage;
@@ -138,19 +148,70 @@ typedef struct {
 } plugin_data;
 
 #ifdef LIGHTTPD_V15
+/*
+           An implementation of top-down splaying with sizes
+             D. Sleator <sleator@cs.cmu.edu>, January 1994.
 
-#define compare(i,j) ((i)-(j))
-/* This is the comparison.*/
-/* Returns <0 if i<j, =0 if i=j, and >0 if i>j */
+  This extends top-down-splay.c to maintain a size field in each node.
+  This is the number of nodes in the subtree rooted there.  This makes
+  it possible to efficiently compute the rank of a key.  (The rank is
+  the number of nodes to the left of the given key.)  It it also
+  possible to quickly find the node of a given rank.  Both of these
+  operations are illustrated in the code below.  The remainder of this
+  introduction is taken from top-down-splay.c.
+
+  "Splay trees", or "self-adjusting search trees" are a simple and
+  efficient data structure for storing an ordered set.  The data
+  structure consists of a binary tree, with no additional fields.  It
+  allows searching, insertion, deletion, deletemin, deletemax,
+  splitting, joining, and many other operations, all with amortized
+  logarithmic performance.  Since the trees adapt to the sequence of
+  requests, their performance on real access patterns is typically even
+  better.  Splay trees are described in a number of texts and papers
+  [1,2,3,4].
+
+  The code here is adapted from simple top-down splay, at the bottom of
+  page 669 of [2].  It can be obtained via anonymous ftp from
+  spade.pc.cs.cmu.edu in directory /usr/sleator/public.
+
+  The chief modification here is that the splay operation works even if the
+  item being splayed is not in the tree, and even if the tree root of the
+  tree is NULL.  So the line:
+
+                              t = splay(i, t);
+
+  causes it to search for item with key i in the tree rooted at t.  If it's
+  there, it is splayed to the root.  If it isn't there, then the node put
+  at the root is the last one before NULL that would have been reached in a
+  normal binary search for i.  (It's a neighbor of i in the tree.)  This
+  allows many other operations to be easily implemented, as shown below.
+
+  [1] "Data Structures and Their Algorithms", Lewis and Denenberg,
+       Harper Collins, 1991, pp 243-251.
+  [2] "Self-adjusting Binary Search Trees" Sleator and Tarjan,
+       JACM Volume 32, No 3, July 1985, pp 652-686.
+  [3] "Data Structure and Algorithm Analysis", Mark Weiss,
+       Benjamin Cummins, 1992, pp 119-130.
+  [4] "Data Structures, Algorithms, and Performance", Derick Wood,
+       Addison-Wesley, 1993, pp 367-375
+*/
+
+#define splaytree_size(x) (((x)==NULL) ? 0 : ((x)->size))
+/* This macro returns the size of a node.  Unlike "x->size",     */
+/* it works even if x=NULL.  The test could be avoided by using  */
+/* a special version of NULL which was a real node with size 0.  */
 
 #define node_size splaytree_size
 
 /* Splay using the key i (which may or may not be in the tree.)
  * The starting root is t, and the tree used is defined by rat
- * size fields are maintained */
-static splay_tree * splaytree_splay (splay_tree *t, int i) {
+ * size fields are maintained
+ */
+static splay_tree *
+splaytree_splay (splay_tree *t, int i)
+{
 	splay_tree N, *l, *r, *y;
-	int comp, root_size, l_size, r_size;
+	int root_size, l_size, r_size;
 
 	if (t == NULL) return t;
 	N.left = N.right = NULL;
@@ -158,33 +219,32 @@ static splay_tree * splaytree_splay (splay_tree *t, int i) {
 	root_size = node_size(t);
 	l_size = r_size = 0;
 
-	for (;;) {
-		comp = compare(i, t->key);
-		if (comp < 0) {
+	while(1) {
+		if (i < t->key) {
 			if (t->left == NULL) break;
-			if (compare(i, t->left->key) < 0) {
-				y = t->left;	/* rotate right */
+			if (i < t->left->key) {
+				y = t->left; /* rotate right */
 				t->left = y->right;
 				y->right = t;
 				t->size = node_size(t->left) + node_size(t->right) + 1;
 				t = y;
 				if (t->left == NULL) break;
 			}
-			r->left = t;	/* link right */
+			r->left = t; /* link right */
 			r = t;
 			t = t->left;
 			r_size += 1+node_size(r->right);
-		} else if (comp > 0) {
+		} else if (i > t->key) {
 			if (t->right == NULL) break;
-			if (compare(i, t->right->key) > 0) {
-				y = t->right;	/* rotate left */
+			if (i > t->right->key) {
+				y = t->right; /* rotate left */
 				t->right = y->left;
 				y->left = t;
 				t->size = node_size(t->left) + node_size(t->right) + 1;
 				t = y;
 				if (t->right == NULL) break;
 			}
-			l->right = t;	/* link left */
+			l->right = t; /* link left */
 			l = t;
 			t = t->right;
 			l_size += 1+node_size(l->left);
@@ -198,7 +258,8 @@ static splay_tree * splaytree_splay (splay_tree *t, int i) {
 
 	l->right = r->left = NULL;
 
-	/* The following two loops correct the size fields of the right path
+	/* 
+	 * The following two loops correct the size fields of the right path
 	 * from the left child of the root and the right path from the left
 	 * child of the root.
 	 */
@@ -211,7 +272,7 @@ static splay_tree * splaytree_splay (splay_tree *t, int i) {
 		r_size -= 1+node_size(y->right);
 	}
 
-	l->right = t->left;	/* assemble */
+	l->right = t->left; /* assemble */
 	r->left = t->right;
 	t->left = N.right;
 	t->right = N.left;
@@ -219,23 +280,27 @@ static splay_tree * splaytree_splay (splay_tree *t, int i) {
 	return t;
 }
 
-static splay_tree * splaytree_insert(splay_tree * t, int i, void *data) {
-	/* Insert key i into the tree t, if it is not already there.
+static splay_tree *
+splaytree_insert(splay_tree * t, int i, void *data)
+{
+	/*
+	 * Insert key i into the tree t, if it is not already there.
 	 * Return a pointer to the resulting tree.
 	 */
 	splay_tree * new;
 
 	if (t != NULL) {
 		t = splaytree_splay(t, i);
-		if (compare(i, t->key)==0) {
-			return t;  /* it's already there */
+		if (i == t->key) {
+			return t; /* it's already there */
 		}
 	}
-	new = (splay_tree *) malloc (sizeof (splay_tree));
-	assert(new);
+	new = (splay_tree *) calloc (1, sizeof(splay_tree));
+	if (new == NULL) /* not enough memory */
+		return t;
 	if (t == NULL) {
 		new->left = new->right = NULL;
-	} else if (compare(i, t->key) < 0) {
+	} else if (i < t->key) {
 		new->left = t->left;
 		new->right = t;
 		t->left = NULL;
@@ -252,17 +317,20 @@ static splay_tree * splaytree_insert(splay_tree * t, int i, void *data) {
 	return new;
 }
 
-static splay_tree * splaytree_delete(splay_tree *t, int i) {
-	/* Deletes i from the tree if it's there.
+static splay_tree *
+splaytree_delete(splay_tree *t, int i)
+{
+	/* 
+	 * Deletes i from the tree if it's there.
 	 * Return a pointer to the resulting tree.
 	 */
 	splay_tree * x;
 	int tsize;
 
-	if (t==NULL) return NULL;
+	if (t == NULL) return NULL;
 	tsize = t->size;
 	t = splaytree_splay(t, i);
-	if (compare(i, t->key) == 0) {/* found it */
+	if (i == t->key) {/* found it */
 		if (t->left == NULL) {
 			x = t->right;
 		} else {
@@ -275,39 +343,57 @@ static splay_tree * splaytree_delete(splay_tree *t, int i) {
 		}
 		return x;
 	} else {
-		return t;						 /* It wasn't there */
+		return t; /* It wasn't there */
 	}
 }
-
 
 #endif
 
 /* init cache_entry table */
-static struct cache_entry *cache_entry_init(void) {
+static struct cache_entry *
+global_cache_entry_init(void)
+{
 	struct cache_entry *c;
-	c = (struct cache_entry *) malloc(sizeof(struct cache_entry)*(MEM_CACHE_NUM+1));
-	assert(c);
-	memset(c, 0, sizeof(struct cache_entry)*(MEM_CACHE_NUM+1));
+	c = (struct cache_entry *) calloc(CACHE_SIZE+1, sizeof(struct cache_entry));
+	if (NULL == c) return NULL;
 	return c;
 }
 
 /* free cache_entry */
-static void cache_entry_free(struct cache_entry *cache) {
+static void 
+free_cache_entry(struct cache_entry *cache)
+{
 	if (cache == NULL) return;
 	cachenumber --;
-	if (cache->content) usedmemory -= cache->content->size;
-	buffer_free(cache->content);
+	if (cache->content) {
+		usedmemory -= cache->content->size;
+		cache->content->ref_count --; // remove share buffer flag
+		buffer_free(cache->content);
+	}
 	buffer_free(cache->content_type);
 	buffer_free(cache->etag);
 	buffer_free(cache->path);
 	buffer_free(cache->mtime);
-	memset(cache, 0, sizeof(struct cache_entry));
+
+	cache->mtime = cache->etag = cache->path = cache->content_type = NULL;
+	cache->content = NULL;
 }
 
 /* reset cache_entry to initial state */
-static void cache_entry_reset(struct cache_entry *cache) {
+static void
+init_cache_entry(struct cache_entry *cache)
+{
 	if (cache == NULL) return;
-	if (cache->content == NULL) cache->content = buffer_init();
+	if (cache->content == NULL) {
+		cache->content = buffer_init();
+	} else if (cache->content->ref_count > 1) { 
+		/* another guy is using old content, we need to put it away from struct first */
+		cache->content->ref_count --; // lower content->ref_count, makes it to be freed later
+		/* allocate new content buffer */
+		cache->content = buffer_init();
+	} else {
+		cache->content->ref_count = 0;
+	}
 	if (cache->content_type == NULL) cache->content_type = buffer_init();
 	if (cache->etag == NULL) cache->etag = buffer_init();
 	if (cache->path == NULL) cache->path = buffer_init();
@@ -315,37 +401,44 @@ static void cache_entry_reset(struct cache_entry *cache) {
 }
 
 /* init the plugin data */
-INIT_FUNC(mod_mem_cache_init) {
+INIT_FUNC(mod_mem_cache_init)
+{
 	plugin_data *p;
 	
 #ifdef LIGHTTPD_V15
 	UNUSED(srv);
+	memcache_used = status_counter_get_counter(CONST_STR_LEN(MEMCACHE_USED));
+	memcache_items = status_counter_get_counter(CONST_STR_LEN(MEMCACHE_ITEMS));
+	memcache_hitrate = status_counter_get_counter(CONST_STR_LEN(MEMCACHE_HITRATE));
 #endif
+
 	p = calloc(1, sizeof(*p));
-	memcache = cache_entry_init();
+	memcache = global_cache_entry_init();
 	lruheader = lruend = cachenumber = 0;
-	reqcount = reqhit = 1;
+	reqcount = reqhit = 0;
 	usedmemory = 0;
 	plru = NULL;
-	
+
 	return p;
 }
 
-void free_cache_entry_chain(struct cache_entry *p) {
+void 
+free_cache_entry_chain(struct cache_entry *p)
+{
 	struct cache_entry *c1, *c2;
 
 	c1 = p;
 	while(c1) {
 		c2 = c1->scnext;
-		cache_entry_free(c1);
+		free_cache_entry(c1);
 		if (c1 != p) free(c1);
 		c1 = c2;
 	}
-
 }
 
 /* detroy the plugin data */
-FREE_FUNC(mod_mem_cache_free) {
+FREE_FUNC(mod_mem_cache_free)
+{
 	plugin_data *p = p_d;
 	size_t i;
 	
@@ -365,17 +458,23 @@ FREE_FUNC(mod_mem_cache_free) {
 	}
 	
 	free(p);
-	for (i = 0; i<= MEM_CACHE_NUM; i++) {
+	for (i = 0; i<= CACHE_SIZE; i++) {
 		free_cache_entry_chain(memcache+i);
 	}
 	free(memcache);
+
+	while(plru) {
+		free(plru->data);
+		plru = splaytree_delete(plru, plru->key);
+	}
 
 	return HANDLER_GO_ON;
 }
 
 /* handle plugin config and check values */
 
-SETDEFAULTS_FUNC(mod_mem_cache_set_defaults) {
+SETDEFAULTS_FUNC(mod_mem_cache_set_defaults)
+{
 	plugin_data *p = p_d;
 	size_t i = 0;
 	
@@ -419,37 +518,27 @@ SETDEFAULTS_FUNC(mod_mem_cache_set_defaults) {
 		if (0 != config_insert_values_global(srv, ((data_config *)srv->config_context->data[i])->value, cv)) {
 			return HANDLER_ERROR;
 		}
+
 		s->expires *= 60;
 
 		if (s->thresold < 0) s->thresold = 0;
-		if (s->thresold > 0)
-#ifdef LIGHTTPD_V14
-			status_counter_set(srv, CONST_STR_LEN("mem-cache.slru-thresold"), s->thresold);
-#else
-			status_counter_set(CONST_STR_LEN("mem-cache.slru-thresold"), s->thresold);
-#endif
+
+		if (srv->srvconf.max_worker > 0)
+			s->maxmemory /= srv->srvconf.max_worker;
+
 	}
 	
 	return HANDLER_GO_ON;
 }
 
-/* the famous DJB hash function for strings from stat_cache.c*/
-static uint32_t hashme(buffer *str) {
-	uint32_t hash = 5381;
-	const char *s;
-	for (s = str->ptr; *s; s++) {
-		hash = ((hash << 5) + hash) + *s;
-	}
-
-	hash &= ~(1 << 31); /* strip the highest bit */
-
-	return hash;
-}
-
+#ifndef PATCH_OPTION
 #define PATCH_OPTION(x) \
-	p->conf.x = s->x
+		p->conf.x = s->x
+#endif
 
-static int mod_mem_cache_patch_connection(server *srv, connection *con, plugin_data *p) {
+static int
+mod_mem_cache_patch_connection(server *srv, connection *con, plugin_data *p)
+{
 	size_t i, j;
 	plugin_config *s = p->config_storage[0];
 	
@@ -494,65 +583,38 @@ static int mod_mem_cache_patch_connection(server *srv, connection *con, plugin_d
 	return 0;
 }
 
-#if LRUDEBUG
-static void print_static_lru(server *srv) {
-	int d1;
-	struct cache_entry *g, *g2;
-
-	if (lruheader == 0 || lruend == 0) return;
-	d1 = lruheader;
-	TRACE("total lru number = %d, total memory used = %ld", cachenumber, (long) usedmemory);
-	while(d1) {
-		g = memcache + d1;
-		if(g->content) 
-			TRACE("list %d: data_length %d, block size %d, path %s", d1, g->content->used, g->content->size, g->path->ptr);
-		else
-			TRACE("list %d: path %s", d1, g->path->ptr);
-		g2 = g->scnext;
-		while(g2) {
-			if(g2->content) 
-				TRACE("chain %d: data_length %d, block size %d, path %s", d1, g2->content->used, g2->content->size, g2->path->ptr);
-			else
-				TRACE("chain %d: path %s", d1, g2->path->ptr);
-			g2 = g2->scnext;
-		}
-		d1 = memcache[d1].next;
-	}
-}
-#endif
+#undef PATCH_OPTION
 
 /* free all cache-entry and init cache_entry */
-static void free_all_cache_entry(server *srv) {
+static void
+free_all_cache_entry(server *srv)
+{
 	int j;
 
 	UNUSED(srv);
-	for (j = 0; j <= MEM_CACHE_NUM; j++) {
+	for (j = 0; j <= CACHE_SIZE; j++) {
 		free_cache_entry_chain(memcache+j);
 	}
 
-	memset(memcache, 0, sizeof(struct cache_entry)*(MEM_CACHE_NUM+1));
-	lruheader = lruend = cachenumber = 0;
-	usedmemory = 0;
-#ifdef LIGHTTPD_V14
+	memset(memcache, 0, sizeof(struct cache_entry)*(CACHE_SIZE+1));
+	lruheader = lruend = cachenumber = usedmemory = 0;
 	log_error_write(srv, __FILE__, __LINE__, "s", "free all state_cache data due to data inconsistence");
-	status_counter_set(srv, CONST_STR_LEN("mem-cache.usedmemory"), usedmemory);
-	status_counter_set(srv, CONST_STR_LEN("mem-cache.cachenumber"), cachenumber);
+#ifdef LIGHTTPD_V14
+	status_counter_set(srv, CONST_STR_LEN(MEMCACHE_USED), usedmemory >> 20);
+	status_counter_set(srv, CONST_STR_LEN(MEMCACHE_ITEMS), cachenumber);
 #else
-	TRACE("%s", "free all state_cache data due to data inconsistence");
-	status_counter_set(CONST_STR_LEN("mem-cache.memory-inuse(MB)"), ((long)usedmemory)>>20);
-	status_counter_set(CONST_STR_LEN("mem-cache.cached-items"), cachenumber);
+	COUNTER_SET(memcache_used, usedmemory >> 20);
+	COUNTER_SET(memcache_items, cachenumber);
 #endif
 }
 
-static void free_cache_entry_by_lru(server *srv, const int num) {
+static void
+free_cache_entry_by_lru(server *srv, const int num)
+{
 	int i, d1;
 
 	if (lruheader == 0 || lruend == 0) return;
 	d1 = lruheader;
-#if LRUDEBUG
-	log_error_write(srv, __FILE__, __LINE__, "sdsd",
-			"memory size before lru remove:", usedmemory, "cachenumber", cachenumber);
-#endif
 	for(i = 0; i < num; i++, d1=lruheader) {
 		lruheader = memcache[d1].next;
 		if (memcache[d1].inuse) {
@@ -567,21 +629,20 @@ static void free_cache_entry_by_lru(server *srv, const int num) {
 		}
 		if (lruheader == 0) { lruheader = lruend = cachenumber = usedmemory = 0; break; }
 	}
+
 #ifdef LIGHTTPD_V14
-	status_counter_set(srv, CONST_STR_LEN("mem-cache.usedmemory"), usedmemory);
-	status_counter_set(srv, CONST_STR_LEN("mem-cache.cachenumber"), cachenumber);
+	status_counter_set(srv, CONST_STR_LEN(MEMCACHE_USED), usedmemory >> 20);
+	status_counter_set(srv, CONST_STR_LEN(MEMCACHE_ITEMS), cachenumber);
 #else
-	status_counter_set(CONST_STR_LEN("mem-cache.memory-inuse(MB)"), ((long)usedmemory)>>20);
-	status_counter_set(CONST_STR_LEN("mem-cache.cached-items"), cachenumber);
-#endif
-#if LRUDEBUG
-	log_error_write(srv, __FILE__, __LINE__, "sdsdsds",
-			"memory size:", usedmemory, "after remove:", i, "items", cachenumber, "remained");
+	COUNTER_SET(memcache_used, usedmemory >> 20);
+	COUNTER_SET(memcache_items, cachenumber);
 #endif
 }
 
 /* update LRU lists */
-static void update_lru(server *srv, int i) {
+static void
+update_lru(server *srv, int i)
+{
 	int d1, d2;
 
 	if (i == 0 || memcache[i].inuse == 0) return;
@@ -627,53 +688,53 @@ static void update_lru(server *srv, int i) {
 /* read file content into buffer dst 
  * return 1 if failed
  */
-static int readfile_into_buffer(server *srv, connection *con, int filesize, buffer *dst) {
+static int 
+readfile_into_buffer(server *srv, connection *con, int filesize, buffer *dst)
+{
 	int ifd;
+	char *files;
 
 	UNUSED(srv);
 
 	if (dst == NULL) return 1;
 	if (dst->size <= (size_t) filesize) return 1;
 	if (-1 == (ifd = open(con->physical.path->ptr, O_RDONLY | O_BINARY))) {
-#ifdef LIGHTTPD_V14
 		log_error_write(srv, __FILE__, __LINE__, "sbss", "opening plain-file", 
 				con->physical.path, "failed", strerror(errno));
-#else
-		TRACE("fail to open %s: %s", con->physical.path->ptr, strerror(errno));
-#endif
 		return 1;
 	}
 
-	if (filesize == read(ifd, dst->ptr, filesize)) { 
-		dst->ptr[filesize] = '\0';
-		dst->used = filesize + 1;
-		close(ifd); 
-		return 0; 
-	} else { 
-#ifdef LIGHTTPD_V14
-		log_error_write(srv, __FILE__, __LINE__, "sds", "fail to read all of ", 
-				filesize, "bytes into memory");
-#else
-		TRACE("fail to read %d bytes of %s into memory", filesize, con->physical.path->ptr);
-#endif
-		close(ifd); 
-		return 1; 
+	files = mmap(NULL, filesize, PROT_READ, MAP_PRIVATE, ifd, 0);
+	if (files == NULL) {
+		log_error_write(srv, __FILE__, __LINE__, "sbs", "mmap", con->physical.path, "failed");
+		close(ifd);
+		return 1;
 	}
+
+	memcpy(dst->ptr, files, filesize);
+	dst->ptr[filesize] = '\0';
+	dst->used = filesize + 1;
+	munmap(files, filesize);
+	close(ifd); 
+	return 0; 
 }
 
 /* if HIT + not expire, set status = 1 and return ptr
  * else if HIT but expired, set status = 0 and return ptr
  * else if not HIT, set status = 0 and return NULL
  */
-static struct cache_entry *check_mem_cache(server *srv, connection *con, plugin_data *p, int *status, const uint32_t i) {
+static struct cache_entry *
+check_memcache(server *srv, connection *con, int *status, const unsigned int hash)
+{
 	struct cache_entry *c;
-	int success = 0;
+	int success = 0, i;
 
+	i = (hash & CACHE_MASK)+1;
 	c = memcache+i;
-	*status = 0;
+	if (status) *status = 0;
 	
 	while (c) {
-		if (c->path && buffer_is_equal(c->path, con->physical.path)) {
+		if (c->path && c->hash == hash && buffer_is_equal(c->path, con->physical.path)) {
 			success = 1;
 			break;
 		}
@@ -681,20 +742,21 @@ static struct cache_entry *check_mem_cache(server *srv, connection *con, plugin_
 	}
 
 	if (success) {
-		if (c->inuse && p->conf.expires 
-			&& (srv->cur_ts - c->ct)  <= (time_t )p->conf.expires)
-			*status = 1;
+		if (c->inuse && (srv->cur_ts <= c->ct))
+			if (status) *status = 1;
 		return c;
 	}
 
 	return NULL;
 }
 
-static struct cache_entry *get_mem_cache_entry(const uint32_t hash) {
-	uint32_t i;
+static struct cache_entry *
+get_new_memcache_entry(const unsigned int hash)
+{
+	unsigned int i;
 	struct cache_entry *c1, *c2;
 
-	i = (hash & (MEM_CACHE_NUM-1))+1;
+	i = (hash & CACHE_MASK)+1;
 	c1 = c2 = memcache+i;
 	
 	/* try to find unused item first */
@@ -704,9 +766,8 @@ static struct cache_entry *get_mem_cache_entry(const uint32_t hash) {
 	}
 	if (c1) return c1; /* use the first unused item */
 	/* we need allocate new cache_entry */
-	c1 = (struct cache_entry *)malloc(sizeof(struct cache_entry));
+	c1 = (struct cache_entry *)calloc(1, sizeof(struct cache_entry));
 	if (c1 == NULL) return NULL;
-	memset(c1, 0, sizeof(struct cache_entry));
 	/* put new cache_entry into hash table */
 	c2->scnext = c1;
 	return c1;
@@ -715,14 +776,16 @@ static struct cache_entry *get_mem_cache_entry(const uint32_t hash) {
 /* return 0 when probation->count > p->conf.thresold in 24 hours or p->conf.thresold == 0
  * otherwise return 1
  */
-static int check_probation_lru(server *srv, plugin_data *p, int hash) {
+static int
+check_probation_lru(server *srv, plugin_data *p, int hash)
+{
 	struct probation *pr;
 	int status = 1;
 
 	if (p->conf.thresold == 0) return 0;
 	plru = splaytree_splay(plru, hash);
 	if (plru == NULL || plru->key != hash) { /* first splaytree node or new node*/
-		pr = (struct probation *) malloc(sizeof(struct probation));
+		pr = (struct probation *) calloc(1, sizeof(struct probation));
 		if (pr == NULL) { /* out of memory */
 			return 1;
 		}
@@ -746,10 +809,12 @@ static int check_probation_lru(server *srv, plugin_data *p, int hash) {
 	return status;
 }
 
-handler_t mod_mem_cache_uri_handler(server *srv, connection *con, void *p_d) {
+handler_t
+mod_mem_cache_uri_handler(server *srv, connection *con, void *p_d)
+{
 	plugin_data *p = p_d;
-	uint32_t hash;
-	int i = 0, success = 0;
+	unsigned int hash;
+	int success = 0;
 	size_t m;
 	stat_cache_entry *sce = NULL;
 	buffer *mtime;
@@ -779,27 +844,26 @@ handler_t mod_mem_cache_uri_handler(server *srv, connection *con, void *p_d) {
 		return HANDLER_GO_ON;
 	}
 	
-	if (con->conf.range_requests && NULL != array_get_element(con->request.headers, "Range"))
+	if (con->conf.range_requests && NULL != array_get_element(con->request.headers, ("Range")))
+		/* don't handle Range request */
 		return HANDLER_GO_ON;
 
 	mod_mem_cache_patch_connection(srv, con, p);
 	
 	if (p->conf.enable == 0|| p->conf.maxfilesize == 0) return HANDLER_GO_ON;
 
-	if (con->conf.log_request_handling) {
+	if (con->conf.log_request_handling)
  		log_error_write(srv, __FILE__, __LINE__, "s", "-- mod_mem_cache_uri_handler called");
-	}
 
 	hash = hashme(con->physical.path);
-	i = (hash & (MEM_CACHE_NUM-1))+1;
-	cache = check_mem_cache(srv, con, p, &success, i);
+	cache = check_memcache(srv, con, &success, hash);
 	reqcount ++;
 
 	if (success == 0 || cache == NULL) {
 		/* going to put content into cache */
-		if (HANDLER_ERROR == stat_cache_get_entry(srv, con, con->physical.path, &sce)) {
+		if (HANDLER_ERROR == stat_cache_get_entry(srv, con, con->physical.path, &sce)) 
 			return HANDLER_GO_ON;
-		}
+
 		/* we only handline regular files */
 #ifdef HAVE_LSTAT
 		if ((sce->is_symlink == 1) && !con->conf.follow_symlink) {
@@ -809,9 +873,9 @@ handler_t mod_mem_cache_uri_handler(server *srv, connection *con, void *p_d) {
 		}
 #endif
 
-		if (!S_ISREG(sce->st.st_mode)) {
+		if (!S_ISREG(sce->st.st_mode)) 
 			return HANDLER_GO_ON;
-		}
+
 		/* check filetypes */
 		for (m = 0; m < p->conf.filetypes->used; m++) {
 			ds = (data_string *)p->conf.filetypes->data[m];
@@ -820,39 +884,53 @@ handler_t mod_mem_cache_uri_handler(server *srv, connection *con, void *p_d) {
 			    strncmp(ds->value->ptr, sce->content_type->ptr, ds->value->used-1)==0)
 				break;
 		}
-		if (m && m == p->conf.filetypes->used)
+
+		if (m && m == p->conf.filetypes->used) /* not found */
 			return HANDLER_GO_ON;
-		if (sce->st.st_size == 0 || ((sce->st.st_size >> 10) > p->conf.maxfilesize)) 
+
+		if (sce->st.st_size == 0 || ((sce->st.st_size >> 10) > p->conf.maxfilesize))  /* don't cache big file */
 			return HANDLER_GO_ON;
 
 		if (cache == NULL) {
 			/* check probation lru now */
 			if (check_probation_lru(srv, p, hash))
 				return HANDLER_GO_ON;
-			cache = get_mem_cache_entry(hash);
+
+			cache = get_new_memcache_entry(hash);
 			if (cache == NULL) {
 				/* may be out of memory, just return GO_ON */
 				return HANDLER_GO_ON;
 			}
 		}
+
+		/* add ETag */
 		etag_mutate(con->physical.etag, sce->etag);
 
+		/* 1) new allocated, cache->inused = 0 
+		 * 2) previous unused, cache->inused = 0 && cache->etag != con->physical.etag
+		 * 3) the items just expired, cache->inused = 0 && cache->etag == con->physical.etag
+		 */
 		if (cache->inuse == 0 || buffer_is_equal(con->physical.etag, cache->etag) == 0) {
 			/* initialze cache's buffer if needed */
-			cache_entry_reset(cache);
-			if (cache->content->size <= sce->st.st_size) {
+			init_cache_entry(cache);
+
+			if (cache->content->size < sce->st.st_size) {
 				usedmemory -= cache->content->size;
-				buffer_prepare_copy(cache->content, sce->st.st_size);
+				buffer_prepare_copy(cache->content, sce->st.st_size+1);
 				usedmemory += cache->content->size;
 			}
+
 			if (readfile_into_buffer(srv, con, sce->st.st_size, cache->content)) {
 				return HANDLER_GO_ON;
 			}
+
 			/* increase cachenumber if needed */
-			if (cache->inuse == 0) cachenumber ++;
-			cache->inuse = 1;
+			if (cache->inuse == 0) {
+				cachenumber ++;
+				cache->inuse = 1;
+			}
 
-
+			cache->content->ref_count = 1; /* setup shared flag */
 			if (sce->content_type->used == 0) {
 				buffer_copy_string_len(cache->content_type, CONST_STR_LEN("application/octet-stream"));
 			} else {
@@ -860,77 +938,77 @@ handler_t mod_mem_cache_uri_handler(server *srv, connection *con, void *p_d) {
 			}
 			buffer_copy_string_buffer(cache->etag, con->physical.etag);
 			buffer_copy_string_buffer(cache->path, con->physical.path);
-			mtime = strftime_cache_get(srv, sce->st.st_mtime);
-			buffer_copy_string_buffer(cache->mtime, mtime);
-			cache->ct = srv->cur_ts;
-#ifdef LIGHTTPD_V14
-			status_counter_set(srv, CONST_STR_LEN("mem-cache.usedmemory"), usedmemory);
-			status_counter_set(srv, CONST_STR_LEN("mem-cache.cachenumber"), cachenumber);
-#else
-			status_counter_set(CONST_STR_LEN("mem-cache.memory-inuse(MB)"), ((long)usedmemory)>>20);
-			status_counter_set(CONST_STR_LEN("mem-cache.cached-items"), cachenumber);
-#endif
+			buffer_copy_string_buffer(cache->mtime, strftime_cache_get(srv, sce->st.st_mtime));
+			cache->ct = srv->cur_ts + p->conf.expires;
+
+			cache->hash = hash;
 		} else  {
-			cache->ct = srv->cur_ts;
+			cache->ct = srv->cur_ts + p->conf.expires;
 			reqhit ++;
-//			response_header_overwrite(srv, con, CONST_STR_LEN("X-Mem-Cache"), CONST_STR_LEN("by memcache"));
+			response_header_overwrite(srv, con, CONST_STR_LEN("X-Cache"), CONST_STR_LEN("By memcache"));
 		}
 	} else {
 		reqhit ++;
-//		response_header_overwrite(srv, con, CONST_STR_LEN("X-Mem-Cache"), CONST_STR_LEN("by memcache"));
+		response_header_overwrite(srv, con, CONST_STR_LEN("X-Cache"), CONST_STR_LEN("By memcache"));
 	}
 
-	if (NULL == array_get_element(con->response.headers, "Content-Type")) {
+	if (NULL == array_get_element(con->response.headers, ("Content-Type"))) {
 		response_header_overwrite(srv, con, CONST_STR_LEN("Content-Type"), CONST_BUF_LEN(cache->content_type));
 	}
 	
-	if (NULL == array_get_element(con->response.headers, "ETag")) {
+	if (NULL == array_get_element(con->response.headers, ("ETag"))) {
 		response_header_overwrite(srv, con, CONST_STR_LEN("ETag"), CONST_BUF_LEN(cache->etag));
 	}
 
 	/* prepare header */
-	if (NULL == (ds = (data_string *)array_get_element(con->response.headers, "Last-Modified"))) {
+	if (NULL == (ds = (data_string *)array_get_element(con->response.headers, ("Last-Modified")))) {
 		mtime = cache->mtime;
 		response_header_overwrite(srv, con, CONST_STR_LEN("Last-Modified"), CONST_BUF_LEN(mtime));
 	} else mtime = ds->value;
 
-#ifdef LIGHTTPD_V14
-	status_counter_set(srv, CONST_STR_LEN("mem-cache.hitpercent"), reqhit*100/reqcount);
-#else
-	status_counter_set(CONST_STR_LEN("mem-cache.hitrate(%)"), (int) (((float)reqhit/(float)reqcount)*100));
-#endif
 	if (HANDLER_FINISHED == http_response_handle_cachable(srv, con, mtime, cache->etag))
 		return HANDLER_FINISHED;
 
-#ifdef LIGHTTPD_V14
-	chunkqueue_append_buffer(con->write_queue, cache->content);
-#else
-	chunkqueue_append_buffer(con->send, cache->content);
-#endif
-	buffer_reset(con->physical.path);
-	update_lru(srv, i);
-	if ((((long)usedmemory) >> 20) > p->conf.maxmemory) {
+	/* update LRU here */
+	update_lru(srv, (hash & CACHE_MASK)+1);
+
+	if ((usedmemory >> 20) >= p->conf.maxmemory) {
 		/* free least used items */
 		free_cache_entry_by_lru(srv, p->conf.lru_remove_count); 
 	}
+
+	buffer_reset(con->physical.path);
+
 #ifdef LIGHTTPD_V14
+	status_counter_set(srv, CONST_STR_LEN(MEMCACHE_HITRATE), (int) (((float)reqhit/(float)reqcount)*100));
+	status_counter_set(srv, CONST_STR_LEN(MEMCACHE_USED), usedmemory >> 20);
+	status_counter_set(srv, CONST_STR_LEN(MEMCACHE_ITEMS), cachenumber);
+	chunkqueue_append_shared_buffer(con->write_queue, cache->content); // use shared buffer
 	con->file_finished = 1;
 #else
+	COUNTER_SET(memcache_hitrate, (int) (((float)reqhit/(float)reqcount)*100));
+	COUNTER_SET(memcache_used, usedmemory >> 20);
+	COUNTER_SET(memcache_items, cachenumber);
+	chunkqueue_append_shared_buffer(con->send, cache->content); // use shared buffer
 	con->send->is_closed = 1;
 #endif
-	
 	return HANDLER_FINISHED;
 }
 
 /* this function is called at dlopen() time and inits the callbacks */
 
-int mod_mem_cache_plugin_init(plugin *p) {
+int
+mod_mem_cache_plugin_init(plugin *p)
+{
 	p->version     = LIGHTTPD_VERSION_ID;
 	p->name        = buffer_init_string("mem_cache");
 	
 	p->init        = mod_mem_cache_init;
-	/*p->handle_physical = mod_mem_cache_uri_handler; */
-	p->handle_subrequest_start = mod_mem_cache_uri_handler;
+#ifdef LIGHTTPD_V14
+	p->handle_subrequest_start = mod_mem_cache_uri_handler; 
+#else
+	p->handle_response_header = mod_mem_cache_uri_handler;
+#endif
 	p->set_defaults  = mod_mem_cache_set_defaults;
 	p->cleanup     = mod_mem_cache_free;
 	

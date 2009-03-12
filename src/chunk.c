@@ -181,6 +181,23 @@ int chunkqueue_append_file(chunkqueue *cq, buffer *fn, off_t offset, off_t len) 
 	return 0;
 }
 
+int chunkqueue_append_shared_buffer(chunkqueue *cq, buffer *mem) {
+	chunk *c;
+
+	if (mem->used == 0) return 0;
+
+	c = chunkqueue_get_unused_chunk(cq);
+	c->type = MEM_CHUNK;
+	c->offset = 0;
+	buffer_free(c->mem); // free just allocated buffer
+	c->mem = mem; // use shared buffer
+	mem->ref_count ++;
+
+	chunkqueue_append_chunk(cq, c);
+
+	return 0;
+}
+
 int chunkqueue_append_buffer(chunkqueue *cq, buffer *mem) {
 	chunk *c;
 
