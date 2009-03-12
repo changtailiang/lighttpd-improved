@@ -1558,7 +1558,7 @@ Optional Packages:
   --with-webdav-locks     locks in mod_webdav
   --with-gdbm             gdbm storage for mod_trigger_b4_dl
   --with-memcache         memcached storage for mod_trigger_b4_dl
-  --with-lua              lua engine for mod_cml
+  --with-lua              lua engine for mod_magnet
 
 Some influential environment variables:
   CC          C compiler command
@@ -30297,7 +30297,7 @@ else
 	no_build="$no_build $plugins"
 fi
 
-plugins="mod_cml mod_magnet"
+plugins="mod_magnet"
 if test ! "x$LUA_LIBS" = x; then
 	do_build="$do_build $plugins"
 else

@@ -407,7 +407,7 @@ fi
 
 dnl Check for lua
 AC_MSG_CHECKING(if lua-support is requested)
-AC_ARG_WITH(lua, AC_HELP_STRING([--with-lua],[lua engine for mod_cml]),
+AC_ARG_WITH(lua, AC_HELP_STRING([--with-lua],[lua engine for mod_magnet]),
 [WITH_LUA=$withval],[WITH_LUA=no])
 
 AC_MSG_RESULT($WITH_LUA)
@@ -570,7 +570,7 @@ else
 	no_build="$no_build $plugins"
 fi
 
-plugins="mod_cml mod_magnet"
+plugins="mod_magnet"
 if test ! "x$LUA_LIBS" = x; then
 	do_build="$do_build $plugins"
 else
