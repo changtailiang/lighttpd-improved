@@ -74,6 +74,8 @@ SUCH DAMAGE.
 
 #include "plugin.h"
 
+#include "version.h"
+
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
@@ -99,11 +101,6 @@ SUCH DAMAGE.
 
 #ifndef HAVE_PCRE_H
 #error hmm, please install pcre-devel package
-#endif
-
-/* check lighttpd version */
-#if LIGHTTPD_VERSION_ID < 0x10500
-#define LIGHTTPD_V14 1
 #endif
 
 #ifndef LIGHTTPD_V14
@@ -587,18 +584,6 @@ FREE_FUNC(mod_cache_free) {
 	while (range_request) { range_request = splaytree_delete(range_request, range_request->key); }
 
 	return HANDLER_GO_ON;
-}
-
-/* the famous DJB hash function for strings from stat_cache.c*/
-static uint32_t hashme(buffer *str) {
-	uint32_t hash = 5381;
-	const char *s;
-
-	for (s = str->ptr; *s; s++) {
-		hash = ((hash << 5) + hash) + *s;
-	}
-	hash &= ~(1 << 31); /* strip the highest bit */
-	return hash;
 }
 
 static struct header_cache * get_header_cache(uint32_t hash) {
