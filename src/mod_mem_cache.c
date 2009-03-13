@@ -1,5 +1,5 @@
 /* 
-Copyright (c) 2006, 2008 QUE Hongyu
+Copyright (c) 2006, 2009 QUE Hongyu
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions
@@ -70,7 +70,7 @@ typedef struct
 	unsigned short enable;
 	short thresold;
 	uint32_t maxmemory; /* maxium total used memory in MB */
-	off_t maxfilesize; /* maxium file size will put into memory */
+	uint32_t maxfilesize; /* maxium file size will put into memory */
 	unsigned int expires;
 	array  *filetypes;
 } plugin_config;
@@ -523,6 +523,12 @@ SETDEFAULTS_FUNC(mod_mem_cache_set_defaults)
 
 		if (s->thresold < 0) s->thresold = 0;
 
+		if (s->maxfilesize <= 0) s->maxfilesize = 512; /* 512K */
+		s->maxfilesize *= 1024; /* KBytes */
+
+		if (s->maxmemory <= 0) s->maxmemory = 256; /* 256M */
+		s->maxmemory *= 1024*1024; /* MBytes */
+
 		if (srv->srvconf.max_worker > 0)
 			s->maxmemory /= srv->srvconf.max_worker;
 
@@ -850,7 +856,7 @@ mod_mem_cache_uri_handler(server *srv, connection *con, void *p_d)
 
 	mod_mem_cache_patch_connection(srv, con, p);
 	
-	if (p->conf.enable == 0|| p->conf.maxfilesize == 0) return HANDLER_GO_ON;
+	if (p->conf.enable == 0 || p->conf.maxfilesize == 0) return HANDLER_GO_ON;
 
 	if (con->conf.log_request_handling)
  		log_error_write(srv, __FILE__, __LINE__, "s", "-- mod_mem_cache_uri_handler called");
@@ -888,7 +894,7 @@ mod_mem_cache_uri_handler(server *srv, connection *con, void *p_d)
 		if (m && m == p->conf.filetypes->used) /* not found */
 			return HANDLER_GO_ON;
 
-		if (sce->st.st_size == 0 || ((sce->st.st_size >> 10) > p->conf.maxfilesize))  /* don't cache big file */
+		if (sce->st.st_size == 0 || (sce->st.st_size > p->conf.maxfilesize))  /* don't cache big file */
 			return HANDLER_GO_ON;
 
 		if (cache == NULL) {
@@ -972,7 +978,7 @@ mod_mem_cache_uri_handler(server *srv, connection *con, void *p_d)
 	/* update LRU here */
 	update_lru(srv, (hash & CACHE_MASK)+1);
 
-	if ((usedmemory >> 20) >= p->conf.maxmemory) {
+	if (usedmemory >= p->conf.maxmemory) {
 		/* free least used items */
 		free_cache_entry_by_lru(srv, p->conf.lru_remove_count); 
 	}
