@@ -50,16 +50,12 @@ void buffer_free(buffer *b) {
 void buffer_reset(buffer *b) {
 	if (!b) return;
 
-	/* limit don't reuse buffer larger than ... bytes */
-	if (b->size > BUFFER_MAX_REUSE_SIZE) {
+	if (b->ref_count == 0) {
 		free(b->ptr);
 		b->ptr = NULL;
 		b->size = 0;
-	} else if (b->size) {
-		b->ptr[0] = '\0';
+		b->used = 0;
 	}
-
-	b->used = 0;
 }
 
 
@@ -401,83 +397,6 @@ char hex2int(unsigned char hex) {
 		hex = 0xFF;
 
 	return hex;
-}
-
-
-/**
- * init the buffer
- *
- */
-
-buffer_array* buffer_array_init(void) {
-	buffer_array *b;
-
-	b = malloc(sizeof(*b));
-
-	assert(b);
-	b->ptr = NULL;
-	b->size = 0;
-	b->used = 0;
-
-	return b;
-}
-
-void buffer_array_reset(buffer_array *b) {
-	size_t i;
-
-	if (!b) return;
-
-	/* if they are too large, reduce them */
-	for (i = 0; i < b->used; i++) {
-		buffer_reset(b->ptr[i]);
-	}
-
-	b->used = 0;
-}
-
-
-/**
- * free the buffer_array
- *
- */
-
-void buffer_array_free(buffer_array *b) {
-	size_t i;
-	if (!b) return;
-
-	for (i = 0; i < b->size; i++) {
-		if (b->ptr[i]) buffer_free(b->ptr[i]);
-	}
-	free(b->ptr);
-	free(b);
-}
-
-buffer *buffer_array_append_get_buffer(buffer_array *b) {
-	size_t i;
-
-	if (b->size == 0) {
-		b->size = 16;
-		b->ptr = malloc(sizeof(*b->ptr) * b->size);
-		assert(b->ptr);
-		for (i = 0; i < b->size; i++) {
-			b->ptr[i] = NULL;
-		}
-	} else if (b->size == b->used) {
-		b->size += 16;
-		b->ptr = realloc(b->ptr, sizeof(*b->ptr) * b->size);
-		assert(b->ptr);
-		for (i = b->used; i < b->size; i++) {
-			b->ptr[i] = NULL;
-		}
-	}
-
-	if (b->ptr[b->used] == NULL) {
-		b->ptr[b->used] = buffer_init();
-	}
-
-	b->ptr[b->used]->used = 0;
-
-	return b->ptr[b->used++];
 }
 
 

@@ -52,31 +52,10 @@ static void chunk_free(chunk *c) {
 
 	buffer_free(c->mem);
 	buffer_free(c->file.name);
+	if (c->file.fd > 0) close(c->file.fd);
 
 	free(c);
 }
-
-static void chunk_reset(chunk *c) {
-	if (!c) return;
-
-	buffer_reset(c->mem);
-
-	if (c->file.is_temp && !buffer_is_empty(c->file.name)) {
-		unlink(c->file.name->ptr);
-	}
-
-	buffer_reset(c->file.name);
-
-	if (c->file.fd != -1) {
-		close(c->file.fd);
-		c->file.fd = -1;
-	}
-	if (MAP_FAILED != c->file.mmap.start) {
-		munmap(c->file.mmap.start, c->file.mmap.length);
-		c->file.mmap.start = MAP_FAILED;
-	}
-}
-
 
 void chunkqueue_free(chunkqueue *cq) {
 	chunk *c, *pc;
@@ -141,7 +120,6 @@ static int chunkqueue_append_chunk(chunkqueue *cq, chunk *c) {
 
 void chunkqueue_reset(chunkqueue *cq) {
 	chunk *c;
-	/* move everything to the unused queue */
 
 	/* mark all read written */
 	for (c = cq->first; c; c = c->next) {
@@ -412,19 +390,21 @@ int chunkqueue_remove_finished_chunks(chunkqueue *cq) {
 
 		if (!is_finished) break;
 
-		chunk_reset(c);
-
 		cq->first = c->next;
 		if (c == cq->last) cq->last = NULL;
 
+#if 0
 		/* keep at max 4 chunks in the 'unused'-cache */
-		if (cq->unused_chunks > 4) {
+		if (cq->unused_chunks > 1) {
 			chunk_free(c);
 		} else {
 			c->next = cq->unused;
 			cq->unused = c;
 			cq->unused_chunks++;
 		}
+#else
+		chunk_free(c);
+#endif
 	}
 
 	return 0;
@@ -439,7 +419,7 @@ static int chunk_encode_append_len(chunkqueue *cq, size_t len) {
 	b = chunkqueue_get_append_buffer(cq);
 	
 	if (len == 0) {
-		buffer_copy_string(b, "0");
+		buffer_copy_string_len(b, CONST_STR_LEN("0"));
 	} else {
 		for (i = 0; i < 8 && len; i++) {
 			len >>= 4;
@@ -456,7 +436,7 @@ static int chunk_encode_append_len(chunkqueue *cq, size_t len) {
 		b->ptr[b->used++] = '\0';
 	}
 		
-	buffer_append_string(b, "\r\n");
+	buffer_append_string_len(b, CONST_STR_LEN("\r\n"));
 	/*
 	chunkqueue_append_buffer(cq, b);
 	buffer_free(b);
