@@ -1,3 +1,11 @@
+2009-03-14
+  * bug fix on shared buffer management
+  * mod_mem_compress uses shared buffer if available
+  * remove chunk_reset() function, lighty will use less memory
+
+2009-03-13
+  * mod_mem_compress imported
+
 2009-03-12
 
   * initial import lighttpd 1.4.22

@@ -103,6 +103,7 @@ typedef struct
 } plugin_config;
 
 #define MEM_CACHE_NUM 65536 /* 2^16 */
+#define MEM_HASH_MASK (MEM_CACHE_NUM-1)
 
 static int lruheader, lruend;
 static uint32_t reqcount, reqhit, cachenumber, usedmemory;
@@ -121,7 +122,9 @@ struct gzip_cache
 	unsigned int next;
 
 	/*file info*/
-	buffer *etag;
+	buffer *path;
+
+	time_t last_modified;
 };
 
 static struct gzip_cache *memcache = NULL;
@@ -137,7 +140,7 @@ typedef struct
 
 /* init cache_entry table */
 static struct gzip_cache *
-gzip_cache_init(void)
+global_gzip_cache_init(void)
 {
 	struct gzip_cache *c;
 	c = (struct gzip_cache *) calloc(MEM_CACHE_NUM + 1, sizeof(struct gzip_cache));
@@ -150,19 +153,33 @@ gzip_cache_free(struct gzip_cache *cache)
 {
 	if (cache == NULL) return;
 	cachenumber --;
-	if (cache->content) usedmemory -= cache->content->size;
-	buffer_free(cache->content);
-	buffer_free(cache->etag);
+	if (cache->content) {
+		usedmemory -= cache->content->size;
+		cache->content->ref_count --; // remove share buffer flag
+		buffer_free(cache->content);
+		cache->content = NULL;
+	}
+	buffer_free(cache->path);
 	memset(cache, 0, sizeof(struct gzip_cache));
 }
 
 /* reset cache_entry to initial state */
 static void
-gzip_cache_reset(struct gzip_cache *cache)
+init_gzip_cache(struct gzip_cache *cache)
 {
 	if (cache == NULL) return;
-	if (cache->content == NULL) cache->content = buffer_init();
-	if (cache->etag == NULL) cache->etag = buffer_init();
+	if (cache->content == NULL) {
+		cache->content = buffer_init();
+	} else if (cache->content->ref_count > 1) {
+		/* another guy is using old content, we need to put it away from struct first */
+		cache->content->ref_count --; // lower content->ref_count, makes it to be freed later
+		/* allocate new content buffer */
+		cache->content = buffer_init();
+	} else {
+		cache->content->ref_count = 0;
+	}
+
+	if (cache->path == NULL) cache->path = buffer_init();
 }
 
 INIT_FUNC(mod_mem_compress_init)
@@ -178,7 +195,7 @@ INIT_FUNC(mod_mem_compress_init)
 
 	p = calloc(1, sizeof(*p));
 	p->b = buffer_init();
-	memcache = gzip_cache_init();
+	memcache = global_gzip_cache_init();
 	lruheader = lruend = usedmemory = cachenumber = 0;
 	reqcount = reqhit = 1;
 	return p;
@@ -589,7 +606,7 @@ check_memcompress_cache_entry(connection *con, const unsigned int i) {
 	
 	/* try to find matched item first */
 	while(c1) {
-	       	if (c1->inuse && c1->etag && buffer_is_equal(c1->etag, con->physical.etag)) {
+		if (c1->inuse && c1->path && buffer_is_equal(c1->path, con->physical.path)) {
 			status = 1;
 			break;
 		}
@@ -606,9 +623,7 @@ check_memcompress_cache_entry(connection *con, const unsigned int i) {
 	if (c1) return c1;
 
 	/* we need allocate new cache_entry */
-	c1 = (struct gzip_cache *)malloc(sizeof(struct gzip_cache));
-	if (c1 == NULL) return NULL;
-	memset(c1, 0, sizeof(struct gzip_cache));
+	c1 = (struct gzip_cache *)calloc(1, sizeof(struct gzip_cache));
 	/* put new cache_entry into hash table chain*/
 	c2->scnext = c1;
 	return c1;
@@ -622,8 +637,7 @@ mod_mem_compress_uri_handler(server *srv, connection *con, void *p_d)
 	stat_cache_entry *sce = NULL;
 	int compression_type = 0, success=0;
 	unsigned int hash;
-	struct gzip_cache *cache;
-	buffer *b;
+	struct gzip_cache *cache = NULL;
 #if defined(HAVE_PCRE_H)
 	int n;
 #define N 10
@@ -715,6 +729,7 @@ mod_mem_compress_uri_handler(server *srv, connection *con, void *p_d)
 	}
 
 	if (compression_type) {
+		/* extension matched */
 		buffer *mtime = strftime_cache_get(srv, sce->st.st_mtime);
  		etag_mutate(con->physical.etag, sce->etag); 
 		response_header_overwrite(srv, con, CONST_STR_LEN("Last-Modified"), CONST_BUF_LEN(mtime));
@@ -727,57 +742,67 @@ mod_mem_compress_uri_handler(server *srv, connection *con, void *p_d)
 		/* check cache in memory */
 		hash = hashme(con->physical.path);
 		/* don't forget to plus 1 */
-		i = (hash & (MEM_CACHE_NUM-1)) + 1;
+		i = (hash & MEM_HASH_MASK) + 1;
 		cache = check_memcompress_cache_entry(con, i);
 		reqcount ++;
-		if (cache == NULL) 
+		if (cache == NULL) /* not enough memory */
 			return HANDLER_GO_ON;
 
-		if (cache->inuse) {
+		if (cache->inuse && (cache->last_modified == sce->st.st_mtime) && cache->content && (cache->content->used > 1)) {
 			/* CACHE FOUND */
 			success = 1;
 			reqhit ++;
-/*			response_header_overwrite(srv, con, CONST_STR_LEN("X-Cache"), CONST_STR_LEN("By memcompress")); */
+			response_header_overwrite(srv, con, CONST_STR_LEN("X-Cache"), CONST_STR_LEN("BY MEMCOMPRESS"));
 		} else {
 			/* gzip it to memory */
 			if (0 == memdeflate_file_to_buffer(srv, con, p, con->physical.path, sce)) {
 				if (cache->inuse == 0) cachenumber ++;
 				/* free old cache data first */
-				gzip_cache_reset(cache);
+				init_gzip_cache(cache);
 				usedmemory -= cache->content->size;
 				buffer_copy_string_buffer(cache->content, p->b);
 				usedmemory += cache->content->size;
+				cache->content->ref_count = 1; /* setup shared flag */
+				buffer_append_memory(cache->content, &nulltrailer, 1); // append null trail '0'
 				success = 1;
 				cache->inuse = 1;
-				buffer_copy_string_buffer(cache->etag, con->physical.etag);
+				cache->last_modified = sce->st.st_mtime;
+				buffer_copy_string_buffer(cache->path, con->physical.path);
+				response_header_overwrite(srv, con, CONST_STR_LEN("X-Cache"), CONST_STR_LEN("TO MEMCOMPRESS"));
 			} else {
 				log_error_write(srv, __FILE__, __LINE__, "sd", "fail to compress file into memory for hash:", hash);
 				return HANDLER_GO_ON;
 			}
 		}
 
-		if (success == 1) {
-#ifdef LIGHTTPD_V14
-       		b = chunkqueue_get_append_buffer(con->write_queue);
-#else
-       		b = chunkqueue_get_append_buffer(con->send);
-#endif
+		if (success == 1 && cache->inuse) {
 			if (HTTP_ACCEPT_ENCODING_GZIP == compression_type) {
-				buffer_append_string_buffer(b, cache->content);
-				response_header_overwrite(srv, con, 
-					CONST_STR_LEN("Content-Encoding"), CONST_STR_LEN("gzip"));
+				/* use share buffer for gziped response */
+#ifdef LIGHTTPD_V14
+				chunkqueue_append_shared_buffer(con->write_queue, cache->content); // use shared buffer
+#else
+				chunkqueue_append_shared_buffer(con->send, cache->content); // use shared buffer
+#endif
+				response_header_overwrite(srv, con, CONST_STR_LEN("Content-Encoding"), CONST_STR_LEN("gzip"));
+
 			} else if (HTTP_ACCEPT_ENCODING_DEFLATE == compression_type) {
-				response_header_overwrite(srv, con, 
-					CONST_STR_LEN("Content-Encoding"), CONST_STR_LEN("deflate"));
+				buffer *b = NULL;
+				/* don't use share buffer for defalted response */
+#ifdef LIGHTTPD_V14
+				b = chunkqueue_get_append_buffer(con->write_queue);
+#else
+				b = chunkqueue_get_append_buffer(con->send);
+#endif
 				buffer_append_memory(b, cache->content->ptr+10, cache->content->used - 18);
+				buffer_append_memory(b, &nulltrailer, 1);
+				response_header_overwrite(srv, con, CONST_STR_LEN("Content-Encoding"), CONST_STR_LEN("deflate"));
 			}
 
-			buffer_append_memory(b, &nulltrailer, 1);
 			buffer_reset(con->physical.path);
 			update_memcompress_lru(srv, i);
 
-			if (usedmemory > p->conf.maxmemory) /* free least used compressed items */
-				free_gzip_cache_by_lru(srv, p->conf.lru_remove_count);
+			response_header_overwrite(srv, con, CONST_STR_LEN("Content-Type"), CONST_BUF_LEN(sce->content_type));
+			response_header_insert(srv, con, CONST_STR_LEN("Vary"), CONST_STR_LEN("Accept-Encoding"));
 
 #ifdef LIGHTTPD_V14
 			status_counter_set(srv, CONST_STR_LEN(MEMCOMPRESS_HITRATE), ((float)reqhit/(float)reqcount)*100);
@@ -790,11 +815,13 @@ mod_mem_compress_uri_handler(server *srv, connection *con, void *p_d)
 			COUNTER_SET(memcompress_items, cachenumber);
 			con->send->is_closed = 1;
 #endif
-			response_header_overwrite(srv, con, CONST_STR_LEN("Content-Type"), CONST_BUF_LEN(sce->content_type));
-			response_header_insert(srv, con, CONST_STR_LEN("Vary"), CONST_STR_LEN("Accept-Encoding"));
+			buffer_reset(p->b);
+
+			if (usedmemory > p->conf.maxmemory) /* free least used compressed items */
+				free_gzip_cache_by_lru(srv, p->conf.lru_remove_count);
+
+			return HANDLER_FINISHED;
 		}
-		buffer_reset(p->b);
-		return HANDLER_FINISHED;
 	}
 	
 	return HANDLER_GO_ON;
