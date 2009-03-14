@@ -825,7 +825,7 @@ mod_mem_cache_uri_handler(server *srv, connection *con, void *p_d)
 	stat_cache_entry *sce = NULL;
 	buffer *mtime;
 	data_string *ds;
-	struct cache_entry *cache;
+	struct cache_entry *cache = NULL;
 	
 	/* someone else has done a decision for us */
 	if (con->http_status != 0) return HANDLER_GO_ON;
@@ -916,7 +916,7 @@ mod_mem_cache_uri_handler(server *srv, connection *con, void *p_d)
 		 * 2) previous unused, cache->inused = 0 && cache->etag != con->physical.etag
 		 * 3) the items just expired, cache->inused = 0 && cache->etag == con->physical.etag
 		 */
-		if (cache->inuse == 0 || buffer_is_equal(con->physical.etag, cache->etag) == 0) {
+		if ((cache->inuse == 0) || buffer_is_equal(con->physical.etag, cache->etag) == 0 || cache->content == NULL || (cache->content->used <= 1)) {
 			/* initialze cache's buffer if needed */
 			init_cache_entry(cache);
 
@@ -937,25 +937,28 @@ mod_mem_cache_uri_handler(server *srv, connection *con, void *p_d)
 			}
 
 			cache->content->ref_count = 1; /* setup shared flag */
+
 			if (sce->content_type->used == 0) {
 				buffer_copy_string_len(cache->content_type, CONST_STR_LEN("application/octet-stream"));
 			} else {
 				buffer_copy_string_buffer(cache->content_type, sce->content_type);
 			}
+
 			buffer_copy_string_buffer(cache->etag, con->physical.etag);
 			buffer_copy_string_buffer(cache->path, con->physical.path);
 			buffer_copy_string_buffer(cache->mtime, strftime_cache_get(srv, sce->st.st_mtime));
 			cache->ct = srv->cur_ts + p->conf.expires;
 
 			cache->hash = hash;
+			response_header_overwrite(srv, con, CONST_STR_LEN("X-Cache"), CONST_STR_LEN("TO MEMCACHE"));
 		} else  {
 			cache->ct = srv->cur_ts + p->conf.expires;
 			reqhit ++;
-			response_header_overwrite(srv, con, CONST_STR_LEN("X-Cache"), CONST_STR_LEN("By memcache"));
+			response_header_overwrite(srv, con, CONST_STR_LEN("X-Cache"), CONST_STR_LEN("BY MEMCACHE"));
 		}
 	} else {
 		reqhit ++;
-		response_header_overwrite(srv, con, CONST_STR_LEN("X-Cache"), CONST_STR_LEN("By memcache"));
+		response_header_overwrite(srv, con, CONST_STR_LEN("X-Cache"), CONST_STR_LEN("BY MEMCACHE"));
 	}
 
 	if (NULL == array_get_element(con->response.headers, ("Content-Type"))) {
