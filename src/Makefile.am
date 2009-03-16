@@ -261,7 +261,7 @@ hdr = server.h buffer.h network.h log.h keyvalue.h \
       settings.h http_chunk.h http_auth_digest.h \
       md5.h http_auth.h stream.h \
       fdevent.h connections.h base.h stat_cache.h \
-      plugin.h mod_auth.h \
+      plugin.h mod_auth.h version.h\
       etag.h joblist.h array.h crc32.h \
       network_backends.h configfile.h bitset.h \
       mod_ssi.h mod_ssi_expr.h inet_ntop_cache.h \
