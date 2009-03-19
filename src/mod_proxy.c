@@ -657,7 +657,10 @@ static int proxy_create_env(server *srv, handler_ctx *hctx) {
 	buffer_append_string_len(b, CONST_STR_LEN(" "));
 
 	buffer_append_string_buffer(b, con->request.uri);
-	buffer_append_string_len(b, CONST_STR_LEN(" HTTP/1.0\r\n"));
+	if (con->request.http_version == HTTP_VERSION_1_1)
+		buffer_append_string_len(b, CONST_STR_LEN(" HTTP/1.1\r\n"));
+	else
+		buffer_append_string_len(b, CONST_STR_LEN(" HTTP/1.0\r\n"));
 
 	proxy_append_header(con, "X-Forwarded-For", 
 		(char *)inet_ntop_cache_get_ip(srv, &(con->dst_addr)));

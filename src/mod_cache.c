@@ -1316,8 +1316,10 @@ static int check_response_iscachable(server *srv, connection *con, plugin_data *
 		}
 	}
 
-	if ((p->conf.dynamic_mode == 0) && (con->response.content_length < 0) && 
+	if ((con->request.http_version == HTTP_VERSION_1_1) &&
+			(con->response.content_length < 0) && 
 		!(con->response.transfer_encoding & HTTP_TRANSFER_ENCODING_CHUNKED)) {
+		/* don't cache no 'Content-Length' and no "chunked-encoding" HTTP/1.1 response */
 		log_error_write(srv, __FILE__, __LINE__, "sb", "ignore no content-length and no chunked transfer-encoding uri", con->uri.path);
 		return 0;
 	}
