@@ -75,6 +75,7 @@ typedef enum {
 typedef struct {
 	array *extensions;
 	unsigned short debug;
+	unsigned short use_http11;
 
 	/* flag of working with mod_cache of lighttpd */
 	unsigned short worked_with_mod_cache;
@@ -207,6 +208,7 @@ SETDEFAULTS_FUNC(mod_proxy_set_defaults) {
 		{ "proxy.debug",               NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION },       /* 1 */
 		{ "proxy.balance",             NULL, T_CONFIG_STRING, T_CONFIG_SCOPE_CONNECTION },      /* 2 */
 		{ "proxy.worked-with-mod-cache",  NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION },       /* 3 */
+		{ "proxy.use-http11",  NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION },       /* 4 */
 		{ NULL,                        NULL, T_CONFIG_UNSET, T_CONFIG_SCOPE_UNSET }
 	};
 
@@ -220,11 +222,13 @@ SETDEFAULTS_FUNC(mod_proxy_set_defaults) {
 		s->extensions    = array_init();
 		s->debug         = 0;
 		s->worked_with_mod_cache = 1;
+		s->use_http11 = 0;
 
 		cv[0].destination = s->extensions;
 		cv[1].destination = &(s->debug);
 		cv[2].destination = p->balance_buf;
 		cv[3].destination = &(s->worked_with_mod_cache);
+		cv[4].destination = &(s->use_http11);
 
 		buffer_reset(p->balance_buf);
 
@@ -646,6 +650,7 @@ static int proxy_create_env(server *srv, handler_ctx *hctx) {
 	size_t i;
 
 	connection *con   = hctx->remote_conn;
+	plugin_data *p = hctx->plugin_data;
 	buffer *b;
 
 	/* build header */
@@ -657,7 +662,7 @@ static int proxy_create_env(server *srv, handler_ctx *hctx) {
 	buffer_append_string_len(b, CONST_STR_LEN(" "));
 
 	buffer_append_string_buffer(b, con->request.uri);
-	if (con->request.http_version == HTTP_VERSION_1_1)
+	if (p->conf.use_http11 && (con->request.http_version == HTTP_VERSION_1_1))
 		buffer_append_string_len(b, CONST_STR_LEN(" HTTP/1.1\r\n"));
 	else
 		buffer_append_string_len(b, CONST_STR_LEN(" HTTP/1.0\r\n"));
@@ -1128,6 +1133,7 @@ static int mod_proxy_patch_connection(server *srv, connection *con, plugin_data 
 	PATCH(debug);
 	PATCH(balance);
 	PATCH(worked_with_mod_cache);
+	PATCH(use_http11);
 
 	/* skip the first, the global context */
 	for (i = 1; i < srv->config_context->used; i++) {
@@ -1147,6 +1153,8 @@ static int mod_proxy_patch_connection(server *srv, connection *con, plugin_data 
 				PATCH(debug);
 			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("proxy.worked-with-mod-cache"))) {
 				PATCH(worked_with_mod_cache);
+			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("proxy.use-http11"))) {
+				PATCH(use_http11);
 			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("proxy.balance"))) {
 				PATCH(balance);
 			}
