@@ -304,159 +304,134 @@ typedef struct {
  * The starting root is t, and the tree used is defined by rat
  * size fields are maintained */
 splay_tree * splaytree_splay (splay_tree *t, int i) {
-    splay_tree N, *l, *r, *y;
-    int comp, root_size, l_size, r_size;
+	splay_tree N, *l, *r, *y;
+	int comp, root_size, l_size, r_size;
 
-    if (t == NULL) return t;
-    N.left = N.right = NULL;
-    l = r = &N;
-    root_size = node_size(t);
-    l_size = r_size = 0;
+	if (t == NULL) return t;
+	N.left = N.right = NULL;
+	l = r = &N;
+	root_size = node_size(t);
+	l_size = r_size = 0;
 
-    for (;;) {
-        comp = compare(i, t->key);
-        if (comp < 0) {
-            if (t->left == NULL) break;
-            if (compare(i, t->left->key) < 0) {
-                y = t->left;                           /* rotate right */
-                t->left = y->right;
-                y->right = t;
-                t->size = node_size(t->left) + node_size(t->right) + 1;
-                t = y;
-                if (t->left == NULL) break;
-            }
-            r->left = t;                               /* link right */
-            r = t;
-            t = t->left;
-            r_size += 1+node_size(r->right);
-        } else if (comp > 0) {
-            if (t->right == NULL) break;
-            if (compare(i, t->right->key) > 0) {
-                y = t->right;                          /* rotate left */
-                t->right = y->left;
-                y->left = t;
-		t->size = node_size(t->left) + node_size(t->right) + 1;
-                t = y;
-                if (t->right == NULL) break;
-            }
-            l->right = t;                              /* link left */
-            l = t;
-            t = t->right;
-            l_size += 1+node_size(l->left);
-        } else {
-            break;
-        }
-    }
-    l_size += node_size(t->left);  /* Now l_size and r_size are the sizes of */
-    r_size += node_size(t->right); /* the left and right trees we just built.*/
-    t->size = l_size + r_size + 1;
+	while(1) {
+		comp = compare(i, t->key);
+		if (comp < 0) {
+			if (t->left == NULL) break;
+			if (compare(i, t->left->key) < 0) {
+				y = t->left;   /* rotate right */
+				t->left = y->right;
+				y->right = t;
+				t->size = node_size(t->left) + node_size(t->right) + 1;
+				t = y;
+				if (t->left == NULL) break;
+			}
+			r->left = t;  /* link right */
+			r = t;
+			t = t->left;
+			r_size += 1+node_size(r->right);
+		} else if (comp > 0) {
+			if (t->right == NULL) break;
+			if (compare(i, t->right->key) > 0) {
+				y = t->right;  /* rotate left */
+				t->right = y->left;
+				y->left = t;
+				t->size = node_size(t->left) + node_size(t->right) + 1;
+				t = y;
+				if (t->right == NULL) break;
+			}
+			l->right = t;	  /* link left */
+			l = t;
+			t = t->right;
+			l_size += 1+node_size(l->left);
+		} else {
+			break;
+		}
+	}
+	l_size += node_size(t->left);  /* Now l_size and r_size are the sizes of */
+	r_size += node_size(t->right); /* the left and right trees we just built.*/
+	t->size = l_size + r_size + 1;
 
-    l->right = r->left = NULL;
+	l->right = r->left = NULL;
 
-    /* The following two loops correct the size fields of the right path  */
-    /* from the left child of the root and the right path from the left   */
-    /* child of the root.                                                 */
-    for (y = N.right; y != NULL; y = y->right) {
-        y->size = l_size;
-        l_size -= 1+node_size(y->left);
-    }
-    for (y = N.left; y != NULL; y = y->left) {
-        y->size = r_size;
-        r_size -= 1+node_size(y->right);
-    }
+	/* The following two loops correct the size fields of the right path  */
+	/* from the left child of the root and the right path from the left   */
+	/* child of the root.												 */
+	for (y = N.right; y != NULL; y = y->right) {
+		y->size = l_size;
+		l_size -= 1+node_size(y->left);
+	}
+	for (y = N.left; y != NULL; y = y->left) {
+		y->size = r_size;
+		r_size -= 1+node_size(y->right);
+	}
 
-    l->right = t->left;                                /* assemble */
-    r->left = t->right;
-    t->left = N.right;
-    t->right = N.left;
+	l->right = t->left;	/* assemble */
+	r->left = t->right;
+	t->left = N.right;
+	t->right = N.left;
 
-    return t;
+	return t;
 }
 
 splay_tree * splaytree_insert(splay_tree * t, int i, void *data) {
 /* Insert key i into the tree t, if it is not already there. */
-/* Return a pointer to the resulting tree.                   */
-    splay_tree * new;
+/* Return a pointer to the resulting tree.				   */
+	splay_tree * new;
 
-    if (t != NULL) {
-	t = splaytree_splay(t, i);
-	if (compare(i, t->key)==0) {
-	    return t;  /* it's already there */
+	if (t != NULL) {
+		t = splaytree_splay(t, i);
+		if (compare(i, t->key)==0) {
+			return t;  /* it's already there */
+		}
 	}
-    }
-    new = (splay_tree *) malloc (sizeof (splay_tree));
-    assert(new);
-    if (t == NULL) {
-	new->left = new->right = NULL;
-    } else if (compare(i, t->key) < 0) {
-	new->left = t->left;
-	new->right = t;
-	t->left = NULL;
-	t->size = 1+node_size(t->right);
-    } else {
-	new->right = t->right;
-	new->left = t;
-	t->right = NULL;
-	t->size = 1+node_size(t->left);
-    }
-    new->key = i;
-    new->data = data;
-    new->size = 1 + node_size(new->left) + node_size(new->right);
-    return new;
+	new = (splay_tree *) malloc (sizeof (splay_tree));
+	assert(new);
+	if (t == NULL) {
+		new->left = new->right = NULL;
+	} else if (compare(i, t->key) < 0) {
+		new->left = t->left;
+		new->right = t;
+		t->left = NULL;
+		t->size = 1+node_size(t->right);
+	} else {
+		new->right = t->right;
+		new->left = t;
+		t->right = NULL;
+		t->size = 1+node_size(t->left);
+	}
+	new->key = i;
+	new->data = data;
+	new->size = 1 + node_size(new->left) + node_size(new->right);
+	return new;
 }
 
 splay_tree * splaytree_delete(splay_tree *t, int i) {
-/* Deletes i from the tree if it's there.               */
-/* Return a pointer to the resulting tree.              */
-    splay_tree * x;
-    int tsize;
+/* Deletes i from the tree if it's there. */
+/* Return a pointer to the resulting tree. */
+	splay_tree * x;
+	int tsize;
 
-    if (t==NULL) return NULL;
-    tsize = t->size;
-    t = splaytree_splay(t, i);
-    if (compare(i, t->key) == 0) {               /* found it */
-	if (t->left == NULL) {
-	    x = t->right;
+	if (t==NULL) return NULL;
+	tsize = t->size;
+	t = splaytree_splay(t, i);
+	if (compare(i, t->key) == 0) {	   /* found it */
+		if (t->left == NULL) {
+			x = t->right;
+		} else {
+			x = splaytree_splay(t->left, i);
+			x->right = t->right;
+		}
+		free(t);
+		if (x != NULL) {
+			x->size = tsize-1;
+		}
+		return x;
 	} else {
-	    x = splaytree_splay(t->left, i);
-	    x->right = t->right;
+		return t;	/* It wasn't there */
 	}
-	free(t);
-	if (x != NULL) {
-	    x->size = tsize-1;
-	}
-	return x;
-    } else {
-	return t;                         /* It wasn't there */
-    }
 }
-
-#if 0
-/* find_rank is not used by mod_cache, just undefine it */
-splay_tree *find_rank(int r, splay_tree *t) {
-/* Returns a pointer to the node in the tree with the given rank.  */
-/* Returns NULL if there is no such node.                          */
-/* Does not change the tree.  To guarantee logarithmic behavior,   */
-/* the node found here should be splayed to the root.              */
-    int lsize;
-    if ((r < 0) || (r >= node_size(t))) return NULL;
-    for (;;) {
-	lsize = node_size(t->left);
-	if (r < lsize) {
-	    t = t->left;
-	} else if (r > lsize) {
-	    r = r - lsize -1;
-	    t = t->right;
-	} else {
-	    return t;
-	}
-    }
-}
-
-#endif
 
 /* splaytree implementation ends here */
-
 #endif
 
 static handler_ctx *handler_ctx_init(void) {
@@ -1101,10 +1076,8 @@ static int save_chunkqueue(int fd, chunkqueue *cq) {
 					chunks[i].iov_base = offset;
 					
 					/* protect the return value of writev() */
-					if (toSend > SSIZE_MAX ||
-					    num_bytes + toSend > SSIZE_MAX) {
+					if (toSend > SSIZE_MAX || num_bytes + toSend > SSIZE_MAX) {
 						chunks[i].iov_len = SSIZE_MAX - num_bytes;
-						
 						num_chunks = i + 1;
 						break;
 					} else {
@@ -1378,8 +1351,10 @@ static array *read_cache_header_file(handler_ctx *hctx) {
 
 	len = lseek(fd, 0, SEEK_END);
 	if (len == -1) { close(fd); return NULL; }
+
 	b = malloc(len+1);
 	if (b == NULL) { close(fd); return NULL; }
+
 	lseek(fd, 0, SEEK_SET);
 	len = read(fd, b, len);
 	close(fd);
@@ -1538,10 +1513,13 @@ static int check_header_cache_existness(server *srv, connection *con, handler_ct
 
 	if (hctx == NULL) return 1;
 	if (get_header_cache(hctx->hash)) return 0;
+
 	b = buffer_init();
 	buffer_copy_string_buffer(b, hctx->file);
 	buffer_append_string(b, ASISEXT);
+
 	if (HANDLER_ERROR == stat_cache_get_entry(srv, con, b, &sce)) status = 1;
+
 	buffer_free(b);
 	return status;
 	
@@ -1649,8 +1627,7 @@ handler_t mod_cache_uri_handler(server *srv, connection *con, void *p_d) {
 	if (con->request.http_method == HTTP_METHOD_PURGE) {
 		/* handle PURGE command 
 		 * PURGE http://www.xxx.com/abc HTTP/1.0
-		 * or PURGE /abc HTTP/1.1
-		 *    HOST: www.xxx.com
+		 * or PURGE /abc HTTP/1.1\r\nHOST: www.xxx.com\r\n\r\n
 		 */
 		
 		char *remote_ip = (char *) inet_ntop_cache_get_ip(srv, &(con->dst_addr));
@@ -1658,7 +1635,7 @@ handler_t mod_cache_uri_handler(server *srv, connection *con, void *p_d) {
 		/* hardcoded 10.0.0.0/8 and 127.0.0.1/32 allow host */
 		if (strncmp(remote_ip, "10.", 3) == 0 || strcmp(remote_ip, "127.0.0.1")
 		   || (p->conf.purgehost_regex && 
-		       pcre_exec(p->conf.purgehost_regex, NULL, remote_ip, strlen(remote_ip), 0, 0, ovec, 3 * N) > 0)
+			   pcre_exec(p->conf.purgehost_regex, NULL, remote_ip, strlen(remote_ip), 0, 0, ovec, 3 * N) > 0)
 		   ) { 
 			get_cache_filename(con, p, hctx->file);
 			if (unlink(hctx->file->ptr) == 0) con->http_status = 200;
@@ -1759,18 +1736,18 @@ handler_t mod_cache_uri_handler(server *srv, connection *con, void *p_d) {
 					if (
 #ifdef LIGHTTPD_V14
 						(NULL != (ds = (data_string *)array_get_element(con->request.headers, "Pragma")) &&
-					      buffer_is_equal_string(ds->value, CONST_STR_LEN("no-cache"))) 
-						||
-					     (NULL != (ds = (data_string *)array_get_element(con->request.headers, "Cache-Control"))
-					      && buffer_is_equal_string(ds->value, CONST_STR_LEN("no-cache"))) 
+						 buffer_is_equal_string(ds->value, CONST_STR_LEN("no-cache"))) 
+							||
+						(NULL != (ds = (data_string *)array_get_element(con->request.headers, "Cache-Control")) &&
+						 buffer_is_equal_string(ds->value, CONST_STR_LEN("no-cache"))) 
 #else
 						(NULL != (ds = (data_string *)array_get_element(con->request.headers, CONST_STR_LEN("Pragma"))) &&
-					      buffer_is_equal_string(ds->value, CONST_STR_LEN("no-cache"))) 
-						||
-					     (NULL != (ds = (data_string *)array_get_element(con->request.headers, CONST_STR_LEN("Cache-Control")))
-					      && buffer_is_equal_string(ds->value, CONST_STR_LEN("no-cache"))) 
+						 buffer_is_equal_string(ds->value, CONST_STR_LEN("no-cache"))) 
+							||
+						(NULL != (ds = (data_string *)array_get_element(con->request.headers, CONST_STR_LEN("Cache-Control"))) &&
+						 buffer_is_equal_string(ds->value, CONST_STR_LEN("no-cache"))) 
 #endif
-					   ) { 
+					) { 
 						/* when user press F5:
 						 * IE send: 
 						 * 	If-Modified-Since: Sun, 21 Nov 2004 14:35:21 GMT
@@ -1943,8 +1920,7 @@ handler_t mod_cache_docroot_handler(server *srv, connection *con, void *p_d) {
 		buffer_append_string_buffer(con->physical.rel_path, b);
 		buffer_free(b);
 		/* append DEFAULT_INDEXFILENAME if needed */
-		if (con->physical.rel_path->used >= 2 && 
-		    con->physical.rel_path->ptr[con->physical.rel_path->used-2] == '/') 
+		if (con->physical.rel_path->used >= 2 && con->physical.rel_path->ptr[con->physical.rel_path->used-2] == '/') 
 			buffer_append_string(con->physical.rel_path, DEFAULT_INDEX_FILENAME);
 
 		if (hctx->accepted_encoding_type == 1) /* append ".gzip" */
@@ -2217,12 +2193,12 @@ handler_t mod_cache_cleanup(server *srv, connection *con, void *p_d) {
 /* this function is called at dlopen() time and inits the callbacks */
 
 int mod_cache_plugin_init(plugin *p) {
-	p->version     = LIGHTTPD_VERSION_ID;
-	p->name        = buffer_init_string("cache");
+	p->version = LIGHTTPD_VERSION_ID;
+	p->name = buffer_init_string("cache");
 	
-	p->init        = mod_cache_init;
-	p->handle_uri_clean  = mod_cache_uri_handler;
-	p->handle_docroot  = mod_cache_docroot_handler;
+	p->init = mod_cache_init;
+	p->handle_uri_clean = mod_cache_uri_handler;
+	p->handle_docroot = mod_cache_docroot_handler;
 #ifdef LIGHTTPD_V14
 	p->handle_response_start = mod_cache_handle_response_start;
 	p->handle_response_filter = mod_cache_handle_response_filter;
@@ -2233,9 +2209,9 @@ int mod_cache_plugin_init(plugin *p) {
 	p->handle_connection_close = mod_cache_cleanup;
 	p->connection_reset = mod_cache_cleanup;
 	p->set_defaults  = mod_cache_set_defaults;
-	p->cleanup     = mod_cache_free;
+	p->cleanup = mod_cache_free;
 	
-	p->data        = NULL;
+	p->data = NULL;
 
 	return 0;
 }

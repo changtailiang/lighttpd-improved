@@ -690,8 +690,7 @@ static int proxy_create_env(server *srv, handler_ctx *hctx) {
 	}
 
 	/* don't use keep alive for proxy protocol */
-	BUFFER_APPEND_STRING_CONST(b, "Connection: close\r\n");
-	buffer_append_string_len(b, CONST_STR_LEN("\r\n"));
+	buffer_append_string_len(b, CONST_STR_LEN("Connection: close\r\n\r\n"));
 
 	hctx->wb->bytes_in += b->used - 1;
 	/* body */
