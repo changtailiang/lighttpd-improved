@@ -98,6 +98,7 @@ SUCH DAMAGE.
 #define CONFIG_CACHE_DYNAMIC_MODE "cache.dynamic-mode"
 #define CONFIG_CACHE_PROGRAMS_EXT "cache.programs-ext"
 #define CONFIG_CACHE_SUPPORT_ACCEPT_ENCODING "cache.support-accept-encoding"
+#define CONFIG_CACHE_MAX_MEMORY_SIZE "cache.max-memory-size"
 
 #ifndef HAVE_PCRE_H
 #error hmm, please install pcre-devel package
@@ -105,7 +106,8 @@ SUCH DAMAGE.
 
 #ifndef LIGHTTPD_V14
 /* splaytree definitions */
-typedef struct tree_node {
+typedef struct tree_node
+{
 	struct tree_node * left, * right;
 	int key;
 	int size;   /* maintained to be the number of nodes rooted here */
@@ -123,19 +125,17 @@ splay_tree * splaytree_size(splay_tree *t);
 /* a special version of NULL which was a real node with size 0.  */
 
 /* splaytree definitions ends herer */
-
-data_integer *cache_memory;
-data_integer *cache_items;
-data_integer *cache_hit_percent;
 #endif
 
-typedef struct {
+typedef struct
+{
 	pcre *regex;
 	int type;
 	time_t expires; /* in seconds */
 } refresh_pattern;
 
-typedef struct {
+typedef struct
+{
 	array *cache_bases;
 
 	/* cache.domains regex array */
@@ -162,6 +162,8 @@ typedef struct {
 
 	unsigned short dynamic_mode;
 	array *programs_ext;
+
+	int max_memory_size;
 } plugin_config;
 
 /* use in refresh_pattern_type */
@@ -173,27 +175,40 @@ typedef struct {
 #define CACHE_OVERRIDE_EXPIRE BV(5)
 #define CACHE_IGNORE_CACHE_CONTROL_HEADER BV(6)
 #define CACHE_FLV_STREAMING BV(7)
+#define CACHE_USE_MEMORY BV(8)
 
 #define ASISEXT	".cachehd"
 
-struct header_cache{
-	uint32_t hash;
+struct memory_cache
+{
+	int inuse;
+	buffer *memoryid;
 	array *headers;
+
 	char expires[sizeof("Sat, 23 Jul 2005 21:20:01 GMT")+2];
 	char max_age[20];
 	time_t expires_time;
 
-	struct header_cache *scnext;
+	buffer *content;
+
+	struct memory_cache *next;
 };
 
-static splay_tree *range_request, *cache_save;
+struct lru_info
+{
+	unsigned int prev, next;
+};
 
-static struct header_cache * memcache = NULL;
+static splay_tree **memory_store = NULL, *range_request = NULL, *cache_save = NULL;
+static struct lru_info *memory_lru = NULL;
+static int lrustart = 0, lruend = 0;
 
-#define MEM_CACHE_NUM 131072 /* 2^17 */
+#define MEMCACHE_NUMBER 65536 /* 2^16 */
+#define MEMCACHE_MASK (MEMCACHE_NUMBER-1)
 
 /* variables for status report */
-static unsigned long usedmemory, reqhit, reqcount, cachenumber = 0;
+static int used_memory_size, local_cache_number = 0, memory_cache_number = 0;
+static uint32_t reqhit, reqcount;
 
 typedef struct {
 	PLUGIN_DATA;
@@ -203,10 +218,14 @@ typedef struct {
 	buffer *tmpfile;
 } plugin_data;
 
-typedef struct {
+typedef struct
+{
 	buffer *file;
 	buffer *tmpfile;
 	buffer *gzipfile;
+
+	buffer *memoryid;
+	buffer *savecontent;
 
 	int fd; /* cache file fd */
 	unsigned short error;
@@ -227,6 +246,8 @@ typedef struct {
 	unsigned int range_request:1;
 	/* flag of remove cache_save splaytree */
 	unsigned int remove_cache_save:1;
+	/* flag of whether to put into memory */
+	unsigned int use_memory:1;
 
 	/* response's LM timestamp */
 	time_t mtime;
@@ -291,18 +312,22 @@ typedef struct {
   	Addison-Wesley, 1993, pp 367-375
 */
 
-#define compare(i,j) ((i)-(j))
-/* This is the comparison. */
-/* Returns <0 if i<j, =0 if i=j, and >0 if i>j */
+#define splaytree_size(x) (((x)==NULL) ? 0 : ((x)->size))
+/* This macro returns the size of a node.  Unlike "x->size", */
+/* it works even if x=NULL.  The test could be avoided by using  */
+/* a special version of NULL which was a real node with size 0.  */
 
 #define node_size splaytree_size
 
 /* Splay using the key i (which may or may not be in the tree.)
  * The starting root is t, and the tree used is defined by rat
- * size fields are maintained */
-splay_tree * splaytree_splay (splay_tree *t, int i) {
+ * size fields are maintained
+ */
+static splay_tree *
+splaytree_splay (splay_tree *t, int i)
+{
 	splay_tree N, *l, *r, *y;
-	int comp, root_size, l_size, r_size;
+	int root_size, l_size, r_size;
 
 	if (t == NULL) return t;
 	N.left = N.right = NULL;
@@ -311,32 +336,31 @@ splay_tree * splaytree_splay (splay_tree *t, int i) {
 	l_size = r_size = 0;
 
 	while(1) {
-		comp = compare(i, t->key);
-		if (comp < 0) {
+		if (i < t->key) {
 			if (t->left == NULL) break;
-			if (compare(i, t->left->key) < 0) {
-				y = t->left;   /* rotate right */
+			if (i < t->left->key) {
+				y = t->left; /* rotate right */
 				t->left = y->right;
 				y->right = t;
 				t->size = node_size(t->left) + node_size(t->right) + 1;
 				t = y;
 				if (t->left == NULL) break;
 			}
-			r->left = t;  /* link right */
+			r->left = t; /* link right */
 			r = t;
 			t = t->left;
 			r_size += 1+node_size(r->right);
-		} else if (comp > 0) {
+		} else if (i > t->key) {
 			if (t->right == NULL) break;
-			if (compare(i, t->right->key) > 0) {
-				y = t->right;  /* rotate left */
+			if (i > t->right->key) {
+				y = t->right; /* rotate left */
 				t->right = y->left;
 				y->left = t;
 				t->size = node_size(t->left) + node_size(t->right) + 1;
 				t = y;
 				if (t->right == NULL) break;
 			}
-			l->right = t;	  /* link left */
+			l->right = t; /* link left */
 			l = t;
 			t = t->right;
 			l_size += 1+node_size(l->left);
@@ -350,9 +374,11 @@ splay_tree * splaytree_splay (splay_tree *t, int i) {
 
 	l->right = r->left = NULL;
 
-	/* The following two loops correct the size fields of the right path  */
-	/* from the left child of the root and the right path from the left   */
-	/* child of the root.												 */
+	/*
+	 * The following two loops correct the size fields of the right path
+	 * from the left child of the root and the right path from the left
+	 * child of the root.
+	 */
 	for (y = N.right; y != NULL; y = y->right) {
 		y->size = l_size;
 		l_size -= 1+node_size(y->left);
@@ -362,7 +388,7 @@ splay_tree * splaytree_splay (splay_tree *t, int i) {
 		r_size -= 1+node_size(y->right);
 	}
 
-	l->right = t->left;	/* assemble */
+	l->right = t->left; /* assemble */
 	r->left = t->right;
 	t->left = N.right;
 	t->right = N.left;
@@ -370,22 +396,27 @@ splay_tree * splaytree_splay (splay_tree *t, int i) {
 	return t;
 }
 
-splay_tree * splaytree_insert(splay_tree * t, int i, void *data) {
-/* Insert key i into the tree t, if it is not already there. */
-/* Return a pointer to the resulting tree.				   */
+static splay_tree *
+splaytree_insert(splay_tree * t, int i, void *data)
+{
+	/*
+	 * Insert key i into the tree t, if it is not already there.
+	 * Return a pointer to the resulting tree.
+	 */
 	splay_tree * new;
 
 	if (t != NULL) {
 		t = splaytree_splay(t, i);
-		if (compare(i, t->key)==0) {
-			return t;  /* it's already there */
+		if (i == t->key) {
+			return t; /* it's already there */
 		}
 	}
 	new = (splay_tree *) malloc (sizeof (splay_tree));
-	assert(new);
+	if (new == NULL) /* not enough memory */
+		return t;
 	if (t == NULL) {
 		new->left = new->right = NULL;
-	} else if (compare(i, t->key) < 0) {
+	} else if (i < t->key) {
 		new->left = t->left;
 		new->right = t;
 		t->left = NULL;
@@ -402,16 +433,20 @@ splay_tree * splaytree_insert(splay_tree * t, int i, void *data) {
 	return new;
 }
 
-splay_tree * splaytree_delete(splay_tree *t, int i) {
-/* Deletes i from the tree if it's there. */
-/* Return a pointer to the resulting tree. */
+static splay_tree *
+splaytree_delete(splay_tree *t, int i)
+{
+	/*
+	 * Deletes i from the tree if it's there.
+	 * Return a pointer to the resulting tree.
+	 */
 	splay_tree * x;
 	int tsize;
 
-	if (t==NULL) return NULL;
+	if (t == NULL) return NULL;
 	tsize = t->size;
 	t = splaytree_splay(t, i);
-	if (compare(i, t->key) == 0) {	   /* found it */
+	if (i == t->key) {/* found it */
 		if (t->left == NULL) {
 			x = t->right;
 		} else {
@@ -424,14 +459,16 @@ splay_tree * splaytree_delete(splay_tree *t, int i) {
 		}
 		return x;
 	} else {
-		return t;	/* It wasn't there */
+		return t; /* It wasn't there */
 	}
 }
 
 /* splaytree implementation ends here */
 #endif
 
-static handler_ctx *handler_ctx_init(void) {
+static handler_ctx *
+handler_ctx_init(void)
+{
 	handler_ctx *hctx;
 
 	hctx = calloc(1, sizeof(*hctx));
@@ -440,83 +477,97 @@ static handler_ctx *handler_ctx_init(void) {
 	hctx->file = buffer_init();
 	hctx->tmpfile = buffer_init();
 	hctx->gzipfile = buffer_init();
+	hctx->memoryid = buffer_init();
 	return hctx;
 }
 
-static void handler_ctx_free(handler_ctx *hctx) {
+static void 
+handler_ctx_free(handler_ctx *hctx)
+{
 	if (hctx) {
 		buffer_free(hctx->file);
 		buffer_free(hctx->tmpfile);
 		buffer_free(hctx->gzipfile);
+		buffer_free(hctx->memoryid);
+		buffer_free(hctx->savecontent);
 		if (hctx->fd > 0) close(hctx->fd);
 		free(hctx);
 	}
 }
 
-/* init cache_entry table */
-static struct header_cache *header_cache_init(void) {
-	struct header_cache *c;
-	c = (struct header_cache *) calloc(sizeof(struct header_cache), (MEM_CACHE_NUM+1));
-	assert(c);
-	return c;
-}
-
 /* free cache_entry */
-static void header_cache_free(struct header_cache *cache) {
+static void
+memory_cache_free(struct memory_cache *cache)
+{
 	if (cache == NULL) return;
-	cachenumber --;
-	if (cache->headers) {
-		usedmemory -= cache->headers->size * sizeof(*(cache->headers->data));
-		array_free(cache->headers);
+	local_cache_number --;
+	array_free(cache->headers);
+	buffer_free(cache->memoryid);
+	if (cache->content) {
+		used_memory_size -= cache->content->size;
+		cache->content->ref_count --; // remove share buffer flag
+		buffer_free(cache->content);
+		if (cache->inuse) memory_cache_number --;
 	}
-	memset(cache, 0, sizeof(struct header_cache));
+	free(cache);
 }
 
-void free_header_cache_chain(struct header_cache *p) {
-	struct header_cache *c1, *c2;
+void
+free_memory_cache_chain(struct memory_cache *p)
+{
+	struct memory_cache *c1, *c2;
 
 	c1 = p;
 	while(c1) {
-		c2 = c1->scnext;
-		header_cache_free(c1);
-		if (c1 != p) free(c1);
+		c2 = c1->next;
+		memory_cache_free(c1);
 		c1 = c2;
 	}
 
 }
 
+#define CACHE_LOCAL_ITEMS "cache.local-cached-items"
+#define CACHE_MEMORY_ITEMS "cache.memory-cached-items"
+#define CACHE_MEMORY "cache.used-memory-size(MB)"
+#define CACHE_HIT_PERCENT "cache.hitrate(%)"
+
+#ifndef LIGHTTPD_V14
+data_integer *cache_memory;
+data_integer *cache_memory_items;
+data_integer *cache_items;
+data_integer *cache_hit_percent;
+#endif
+
+
 /* init the plugin data */
-INIT_FUNC(mod_cache_init) {
+INIT_FUNC(mod_cache_init)
+{
 	plugin_data *p;
 	
 #ifndef LIGHTTPD_V14
-	UNUSED(srv);
+	cache_items = status_counter_get_counter(CONST_STR_LEN(CACHE_LOCAL_ITEMS));
+	cache_memory = status_counter_get_counter(CONST_STR_LEN(CACHE_MEMORY));
+	cache_memory_items = status_counter_get_counter(CONST_STR_LEN(CACHE_MEMORY_ITEMS));
+	cache_hit_percent = status_counter_get_counter(CONST_STR_LEN(CACHE_HIT_PERCENT));	
 #endif
+	memory_store = (splay_tree **) calloc(MEMCACHE_NUMBER+1, sizeof(splay_tree *));
+	memory_lru = (struct lru_info *)calloc(MEMCACHE_NUMBER+1, sizeof(struct lru_info));
+	if (memory_store == NULL || memory_lru == NULL) return NULL;
 	p = calloc(1, sizeof(*p));
 	p->tmpfile = buffer_init();
-	memcache = header_cache_init();
-	reqcount = reqhit = cachenumber = usedmemory = 0;
+	reqcount = reqhit = local_cache_number = used_memory_size = memory_cache_number = 0;
 	range_request = cache_save = NULL;
 	srand(getpid());
 
-#ifndef LIGHTTPD_V14
-#define CACHE_ITEMS "cache.cached-items"
-#define CACHE_MEMORY "cache.memory-inuse(KB)"
-#define CACHE_HIT_PERCENT "cache.hitrate(%)"
-	cache_items = status_counter_get_counter(CONST_STR_LEN(CACHE_ITEMS));
-	cache_memory = status_counter_get_counter(CONST_STR_LEN(CACHE_MEMORY));
-	cache_hit_percent = status_counter_get_counter(CONST_STR_LEN(CACHE_HIT_PERCENT));	
-#endif
 	return p;
 }
 
 /* detroy the plugin data */
-FREE_FUNC(mod_cache_free) {
+FREE_FUNC(mod_cache_free)
+{
 	plugin_data *p = p_d;
 	size_t i, j;
 	
-	UNUSED(srv);
-
 	if (!p) return HANDLER_GO_ON;
 	
 	if (p->config_storage) {
@@ -548,70 +599,177 @@ FREE_FUNC(mod_cache_free) {
 	buffer_free(p->tmpfile);
 	free(p);
 	
-	for (j = 0; j < MEM_CACHE_NUM; j++) { header_cache_free(memcache+j); }
-	free(memcache);
+	for (j = 0; j <= MEMCACHE_NUMBER; j++) { 
+		while(memory_store[j]) {
+			free_memory_cache_chain((struct memory_cache *)(memory_store[j]->data));
+			memory_store[j] = splaytree_delete(memory_store[j], memory_store[j]->key);
+		}
+	}
+	free(memory_store);
+	free(memory_lru);
 
 	while (cache_save) { cache_save = splaytree_delete(cache_save, cache_save->key); }
-
 	while (range_request) { range_request = splaytree_delete(range_request, range_request->key); }
 
 	return HANDLER_GO_ON;
 }
 
-static struct header_cache * get_header_cache(uint32_t hash) {
-	uint32_t key;
-	struct header_cache *c;
+static void
+free_memory_cache_by_lru(server *srv, const int num)
+{
+	int i, j;
 
-	key = hash&(MEM_CACHE_NUM-1);
-	c = memcache+key;
-	while (c && (c->hash != hash))
-		c = c->scnext;
+	if (lrustart == 0 || lruend == 0) return;
+	j = lrustart;
+	for(i = 0; i < num; i++, j=lrustart) {
+		lrustart = memory_lru[j].next;
+		memory_lru[j].next = memory_lru[j].prev = 0;
+		while(memory_store[j]) {
+			free_memory_cache_chain((struct memory_cache *)(memory_store[j]->data));
+			memory_store[j] = splaytree_delete(memory_store[j], memory_store[j]->key);
+		}
+		if (lrustart == 0) { lrustart = lruend = 0; break; }
+	}
+
+	if (used_memory_size < 0) used_memory_size = 0;
+	if (memory_cache_number < 0) memory_cache_number = 0;
+	if (local_cache_number < 0) local_cache_number = 0;
+#ifdef LIGHTTPD_V14
+	status_counter_set(srv, CONST_STR_LEN(CACHE_MEMORY), used_memory_size >> 20);
+	status_counter_set(srv, CONST_STR_LEN(CACHE_MEMORY_ITEMS), memory_cache_number);
+	status_counter_set(srv, CONST_STR_LEN(CACHE_LOCAL_ITEMS), local_cache_number);
+#else
+	COUNTER_SET(cache_memory, used_memory_size >> 20);
+	COUNTER_SET(cache_memory_items, memory_cache_number);
+	COUNTER_SET(cache_local_items, local_cache_number);
+#endif
+}
+
+/* update LRU lists */
+static void
+update_lru(int i)
+{
+	int d1, d2;
+
+	if (i == 0) return;
+	if (lrustart == 0 || lruend == 0) {
+		/* first item */
+		memory_lru[i].prev = memory_lru[i].next = 0;
+		lrustart = lruend = i;
+	} else if (i != lruend && i != lrustart){
+		/* re-order lru list */
+		d1 = memory_lru[i].prev;
+		d2 = memory_lru[i].next;
+		if (d1 == 0 && d2 == 0) {
+			/* new item */
+			memory_lru[i].prev = lruend;
+			memory_lru[i].next = 0;
+			memory_lru[lruend].next = i;
+			lruend = i;
+		} else if (d1 == 0 || d2 == 0) {
+			/* wrong lru , free all cached data and reset lru */
+			memset(memory_lru, 0, sizeof(struct lru_info)*(MEMCACHE_NUMBER+1));
+			lrustart = lruend = 0;
+		} else {
+			memory_lru[d1].next = d2;
+			memory_lru[d2].prev = d1;
+			/* append to end of list */
+			memory_lru[lruend].next = i;
+			memory_lru[i].next = 0;
+			memory_lru[i].prev = lruend;
+			lruend = i;
+		}
+	} else if (i == lruend) {
+		/* end of lru, no change */
+	} else if (i == lrustart) {
+		/* move header to the end*/
+		lrustart = memory_lru[i].next;
+		memory_lru[lrustart].prev = 0;
+		memory_lru[i].prev = lruend;
+		memory_lru[i].next = 0;
+		memory_lru[lruend].next = i;
+		lruend = i;
+	}
+}
+
+struct memory_cache *
+get_memory_cache(handler_ctx *hctx)
+{
+	unsigned int i;
+	struct memory_cache *c;
+
+	if (hctx == NULL) return NULL;
+
+	i = (hctx->hash & MEMCACHE_MASK)+1;
+	memory_store[i] = splaytree_splay(memory_store[i], hctx->hash);
+	if (memory_store[i] == NULL || memory_store[i]->key != hctx->hash)
+		return NULL;
+	c = (struct memory_cache *)memory_store[i]->data;
+	while (c) {
+		if (c->memoryid == NULL || !buffer_is_equal(hctx->memoryid, c->memoryid))
+			c = c->next;
+		else
+			break;
+	}
+	if (c) update_lru(i);
 	return c;
 }
 
-static void update_header_cache(server *srv, uint32_t hash, array *d) {
-	uint32_t key;
-	struct header_cache *c, *c1;
+void
+update_memory_cache_headers(server *srv, handler_ctx *hctx, array *d)
+{
+	unsigned int i;
+	struct memory_cache *c, *c1;
 
-#ifndef LIGHTTPD_V14
-	UNUSED(srv);
-#endif
+	if (hctx == NULL || d == NULL) return;
 
-	key = hash&(MEM_CACHE_NUM-1);
-	c = c1 = memcache+key;
-	while (c && c->hash && (c->hash != hash)) {
-		c1 = c;
-		c = c->scnext;
-	}
-	if (c == NULL) {
-		c = (struct header_cache *) calloc(1, sizeof(struct header_cache));
+	i = (hctx->hash & MEMCACHE_MASK) + 1;
+	memory_store[i] = splaytree_splay(memory_store[i], hctx->hash);
+	if (memory_store[i] == NULL || memory_store[i]->key != hctx->hash) {
+		/* new entry */
+		c = (struct memory_cache *)calloc(1, sizeof(struct memory_cache));
 		if (c == NULL) return;
-		c->hash = hash;
 		c->headers = d;
-		usedmemory += d->size * sizeof(*(d->data));
-		c1->scnext = c;
-		cachenumber ++;
+		c->memoryid = buffer_init();
+		buffer_copy_string_buffer(c->memoryid, hctx->memoryid);
+		memory_store[i] = splaytree_insert(memory_store[i], hctx->hash, c);
+		local_cache_number ++;
 	} else {
-		if (c->headers) { /* free old cache first */
-			usedmemory -= c->headers->size * sizeof(*(c->headers->data));
+		c1 = c = (struct memory_cache *)memory_store[i]->data;
+		while (c) {
+			if (c->memoryid == NULL || !buffer_is_equal(hctx->memoryid, c->memoryid)) {
+				c1 = c;
+				c = c->next;
+			} else {
+				break;
+			}
+		}
+		if (c == NULL) {
+			c = (struct memory_cache *)calloc(1, sizeof(struct memory_cache));
+			if (c == NULL) return;
+			if (c1) c1->next = c;
+			else memory_store[i]->data = (void *) c; /* memory_store[i]->data == NULL */
+			c->memoryid = buffer_init();
+			buffer_copy_string_buffer(c->memoryid, hctx->memoryid);
+			local_cache_number ++;
+		} else if (c->headers) {
 			array_free(c->headers);
 		}
 		c->headers = d;
-		usedmemory += d->size * sizeof(*(d->data));
-		if (c->hash == 0) cachenumber ++;
-		c->hash = hash;
 	}
+	update_lru(i);
+	if (local_cache_number < 0) local_cache_number = 0;
 #ifdef LIGHTTPD_V14
-	status_counter_set(srv, CONST_STR_LEN("cache.cached-itmes"), cachenumber);
-	status_counter_set(srv, CONST_STR_LEN("cache.memory-inuse(KB)"), usedmemory>>10);
+	status_counter_set(srv, CONST_STR_LEN(CACHE_LOCAL_ITEMS), local_cache_number);
 #else
-	COUNTER_SET(cache_memory, usedmemory >> 10);
-	COUNTER_SET(cache_items, cachenumber);
+	COUNTER_SET(cache_items, local_cache_number);
 #endif
 	return;
 }
 
-static void update_asis_expires_cache(struct header_cache *cc, time_t exp, int timeout) {
+static void
+update_asis_expires_cache(struct memory_cache *cc, time_t exp, int timeout)
+{
 	if (cc == NULL || exp == 0) return;
 	if (cc->expires_time == exp) return;
 	strftime(cc->expires, sizeof("Fri, 01 Jan 1990 00:00:00 GMT")+1,
@@ -621,48 +779,68 @@ static void update_asis_expires_cache(struct header_cache *cc, time_t exp, int t
 		snprintf(cc->max_age, 19, "max-age=%d",timeout);
 	} else {
 		strcpy(cc->max_age, "max-age=2592000"); /* 30 days */
-		/*cc->max_age[0] = '\0'; */
 	}
 	return ;
 }
 
-static void delete_header_cache(server *srv, uint32_t hash) {
-	uint32_t key;
-	struct header_cache *c, *c1;
+/* return 0 if successful */
+static int
+delete_memory_cache(server *srv, handler_ctx *hctx)
+{
+	unsigned int i;
+	struct memory_cache *c, *c1;
 
-#ifndef LIGHTTPD_V14
-	UNUSED(srv);
-#endif
+	if (hctx == NULL) return 1;
+	i = (hctx->hash & MEMCACHE_MASK) + 1;
+	memory_store[i] = splaytree_splay(memory_store[i], hctx->hash);
+	if (memory_store[i] == NULL || memory_store[i]->key != hctx->hash)
+		return 1;
+ 
+	c = c1 = (struct memory_cache *)memory_store[i]->data;
 
-	key = hash&(MEM_CACHE_NUM-1);
-	c = c1 = memcache+key;
-	while(c && (c->hash != hash)) {
+	while(c && !buffer_is_equal(c->memoryid, hctx->memoryid)) {
 		c1 = c;
-		c = c->scnext;
+		c = c->next;
 	}
-	if (c == NULL) return;
-	if (c->headers) {
-		usedmemory -= c->headers->size * sizeof(*(c->headers->data));
-		array_free(c->headers);
-		c->headers = NULL;
+
+	if (c == NULL) return 1; /* not found */
+	else if (c1 == c) {
+		/* first entry */
+		memory_store[i]->data = c->next;
+	} else {
+		c1->next = c->next;
 	}
-	cachenumber --;
-	if (c1 == c) { /* first item of chains */
-		memset(c, 0, sizeof(struct header_cache));
-	} else { /* remove c from chain */
-		c1->scnext = c->scnext;
-		free(c);
+
+	update_lru(i);
+	local_cache_number --;
+	if (c->headers) array_free(c->headers);
+	if (c->memoryid) buffer_free(c->memoryid);
+	if (c->content) {
+		used_memory_size -= c->content->size;
+		if (c->inuse)
+			memory_cache_number --;
+		c->content->ref_count --; // remove share buffer flag
+		buffer_free(c->content);
 	}
+	free(c);
+
+	if (used_memory_size < 0) used_memory_size = 0;
+	if (memory_cache_number < 0) memory_cache_number = 0;
+	if (local_cache_number < 0) local_cache_number = 0;
 #ifdef LIGHTTPD_V14
-	status_counter_set(srv, CONST_STR_LEN("cache.cached-itmes"), cachenumber);
-	status_counter_set(srv, CONST_STR_LEN("cache.memory-inuse(KB)"), usedmemory>>10);
+	status_counter_set(srv, CONST_STR_LEN(CACHE_MEMORY), used_memory_size >> 20);
+	status_counter_set(srv, CONST_STR_LEN(CACHE_MEMORY_ITEMS), memory_cache_number);
+	status_counter_set(srv, CONST_STR_LEN(CACHE_LOCAL_ITEMS), local_cache_number);
 #else
-	COUNTER_SET(cache_memory, usedmemory >> 10);
-	COUNTER_SET(cache_items, cachenumber);
+	COUNTER_SET(cache_memory, used_memory_size >> 20);
+	COUNTER_SET(cache_memory_items, memory_cache_number);
+	COUNTER_SET(cache_local_items, local_cache_number);
 #endif
+	return 0;
 }
 
-SETDEFAULTS_FUNC(mod_cache_set_defaults) {
+SETDEFAULTS_FUNC(mod_cache_set_defaults)
+{
 	plugin_data *p = p_d;
 	size_t i = 0;
 	data_unset *du;
@@ -679,6 +857,7 @@ SETDEFAULTS_FUNC(mod_cache_set_defaults) {
 		{ CONFIG_CACHE_DYNAMIC_MODE, NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION }, /* 8 */
 		{ CONFIG_CACHE_PROGRAMS_EXT, NULL, T_CONFIG_ARRAY, T_CONFIG_SCOPE_CONNECTION }, /* 9 */
 		{ CONFIG_CACHE_SUPPORT_ACCEPT_ENCODING, NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION }, /* 10 */
+		{ CONFIG_CACHE_MAX_MEMORY_SIZE, NULL, T_CONFIG_SHORT, T_CONFIG_SCOPE_CONNECTION }, /* 11 */
 		{ NULL, NULL, T_CONFIG_UNSET, T_CONFIG_SCOPE_UNSET }
 	};
 	
@@ -714,6 +893,7 @@ SETDEFAULTS_FUNC(mod_cache_set_defaults) {
 		s->programs_ext = array_init();
 		s->dynamic_mode = 0;
 		s->support_accept_encoding = 0;
+		s->max_memory_size = 256; /* default is 256M */
 
 		cv[0].destination = &(s->support_queries);
 		cv[1].destination = &(s->enable);
@@ -726,6 +906,7 @@ SETDEFAULTS_FUNC(mod_cache_set_defaults) {
 		cv[8].destination = &(s->dynamic_mode);
 		cv[9].destination = s->programs_ext;
 		cv[10].destination = &(s->support_accept_encoding);
+		cv[11].destination = &(s->max_memory_size);
 
 		p->config_storage[i] = s;
 		ca = ((data_config *)srv->config_context->data[i])->value;
@@ -733,6 +914,9 @@ SETDEFAULTS_FUNC(mod_cache_set_defaults) {
 		if (0 != config_insert_values_global(srv, ((data_config *)srv->config_context->data[i])->value, cv)) {
 			return HANDLER_ERROR;
 		}
+
+		if (s->max_memory_size <= 0) s->max_memory_size = 256;
+		s->max_memory_size *= 1024*1024;
 
 		if (s->domains->used) {
 			/* parse domains */
@@ -829,6 +1013,8 @@ SETDEFAULTS_FUNC(mod_cache_set_defaults) {
 					s->rp[m].type |= CACHE_OVERRIDE_EXPIRE;
 				else if (strncmp(p3, "flv-streaming", sizeof("flv-streaming")) == 0)
 					s->rp[m].type |= CACHE_FLV_STREAMING;
+				else if (strncmp(p3, "use-memory", sizeof("use-memory")) == 0)
+					s->rp[m].type |= CACHE_USE_MEMORY;
 				else if (strncmp(p3, "ignore-cache-control-header", sizeof("ignore-cache-control-header")) == 0)
 					s->rp[m].type |= CACHE_IGNORE_CACHE_CONTROL_HEADER;
 				else if (strncmp(p3, "nocache",  sizeof("nocache")) == 0 || strncmp(p3, "no-cache", sizeof("no-cache")) == 0)
@@ -851,7 +1037,9 @@ SETDEFAULTS_FUNC(mod_cache_set_defaults) {
 	p->conf.x = s->x;
 #endif
 
-static int mod_cache_patch_connection(server *srv, connection *con, plugin_data *p) {
+static int
+mod_cache_patch_connection(server *srv, connection *con, plugin_data *p)
+{
 	size_t i, j;
 	plugin_config *s = p->config_storage[0];
 	
@@ -868,6 +1056,7 @@ static int mod_cache_patch_connection(server *srv, connection *con, plugin_data 
 	PATCH_OPTION(dynamic_mode);
 	PATCH_OPTION(programs_ext);
 	PATCH_OPTION(support_accept_encoding);
+	PATCH_OPTION(max_memory_size);
 	
 	/* skip the first, the global context */
 	for (i = 1; i < srv->config_context->used; i++) {
@@ -903,6 +1092,8 @@ static int mod_cache_patch_connection(server *srv, connection *con, plugin_data 
 				PATCH_OPTION(dynamic_mode);
 			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN(CONFIG_CACHE_SUPPORT_ACCEPT_ENCODING))) {
 				PATCH_OPTION(support_accept_encoding);
+			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN(CONFIG_CACHE_MAX_MEMORY_SIZE))) {
+				PATCH_OPTION(max_memory_size);
 			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN(CONFIG_CACHE_PROGRAMS_EXT))) {
 				PATCH_OPTION(programs_ext);
 			}
@@ -919,7 +1110,9 @@ static int mod_cache_patch_connection(server *srv, connection *con, plugin_data 
 #define DEFAULT_INDEX_FILENAME "index_mod_cache.html"
 
 /* generate filename after cache_bases/cache_domain */
-static void get_cache_uri_pattern(connection *con, plugin_data *p, buffer *dst) {
+static void
+get_cache_uri_pattern(connection *con, plugin_data *p, buffer *dst)
+{
 	handler_ctx *hctx = con->plugin_ctx[p->id];
 	buffer *src;
 	char *p1, *p2;
@@ -991,7 +1184,9 @@ static void get_cache_uri_pattern(connection *con, plugin_data *p, buffer *dst) 
 	}
 }
 
-static void get_cache_filename(connection *con, plugin_data *p, buffer *b) {
+static void
+get_cache_filename(connection *con, plugin_data *p, buffer *b)
+{
 	size_t i;
 	data_string *ds;
 	handler_ctx *hctx = con->plugin_ctx[p->id];
@@ -1017,11 +1212,56 @@ static void get_cache_filename(connection *con, plugin_data *p, buffer *b) {
 		buffer_append_string(b, DEFAULT_INDEX_FILENAME);
 }
 
+static int
+copy_chunkqueue_to_memory(server *srv, handler_ctx *hctx, chunkqueue *cq)
+{
+	chunk *c;
+	size_t k;
+	int result = 0;
+	off_t *save_offset;
+
+	if (hctx == NULL) return 0;
+
+	for (c=cq->first, k = 0; c; c = c->next, k ++) ;
+	if (k == 0) return 0;
+
+	save_offset = (off_t *) calloc(k, sizeof(off_t));
+	if (save_offset == NULL) return -1;
+
+	/* backup chunkqueue's offset */
+	for (c=cq->first, k = 0; c; c = c->next, k++) save_offset[k] = c->offset;
+	
+	for(c = cq->first; result == 0 && c; c = c->next) {
+		
+		switch(c->type) {
+		case MEM_CHUNK: 
+			if (c->mem)
+				buffer_append_string_buffer(hctx->savecontent, c->mem);
+			break;
+		case FILE_CHUNK:
+			/* we don't local cache FILE_CHUNK */
+			result = -1;
+			break;
+		default:
+			log_error_write(srv, __FILE__, __LINE__, "ds", c, "type not known");
+			result = -1;
+			break;
+		}
+	}
+
+	for (c=cq->first, k = 0; c; c = c->next, k++)
+		c->offset = save_offset[k];
+
+	free(save_offset);
+	return result;
+}
 /* ugly hack on network_freebsd_sendfile.c code
  * just save chunkqueue->offset before save
  * and restore them after chunk saved
  */
-static int save_chunkqueue(int fd, chunkqueue *cq) {
+static int
+save_chunkqueue(int fd, chunkqueue *cq)
+{
 	chunk *c;
 	size_t chunks_written = 0, k;
 	int result = 0;
@@ -1161,7 +1401,9 @@ restore_offset:
 }
 
 /* update cache file's stat time */
-static void update_cache_change_time(char *file, time_t mtime, time_t now) {
+static void
+update_cache_change_time(char *file, time_t mtime, time_t now)
+{
 	struct timeval cachetime[2];
 	buffer *b;
 
@@ -1183,7 +1425,8 @@ static void update_cache_change_time(char *file, time_t mtime, time_t now) {
 	return;
 }
 
-static int check_response_iscachable(server *srv, connection *con, plugin_data *p, handler_ctx *hctx)
+static int
+check_response_iscachable(server *srv, connection *con, plugin_data *p, handler_ctx *hctx)
 {
 	data_string *ds;
 	struct tm etime;
@@ -1226,7 +1469,7 @@ static int check_response_iscachable(server *srv, connection *con, plugin_data *
 		return 0;
 	}
 
-	if ((p->conf.support_accept_encoding == 0 ) &&
+	if ((p->conf.support_accept_encoding == 0 || hctx->use_memory == 1) &&
 #ifdef LIGHTTPD_V14
 		(NULL != (ds = (data_string *)array_get_element(con->response.headers, "Vary")))
 #else
@@ -1307,7 +1550,9 @@ static int check_response_iscachable(server *srv, connection *con, plugin_data *
  * following code is taken from mod_compress.c
  */
 
-static int mkdir_recursive(char *p, off_t offset) {
+static int
+mkdir_recursive(char *p, off_t offset)
+{
 	char *dir, *nextdir;
 
 	for (dir = p + offset; NULL != (nextdir = strchr(dir, '/')); dir = nextdir + 1) {
@@ -1327,7 +1572,9 @@ static int mkdir_recursive(char *p, off_t offset) {
 /*
  * success return new malloced array, otherwise return NULL
  */
-static array *read_cache_header_file(handler_ctx *hctx) {
+static array *
+read_cache_header_file(handler_ctx *hctx)
+{
 	int fd;
 	buffer *f;
 	off_t len;
@@ -1386,8 +1633,10 @@ static array *read_cache_header_file(handler_ctx *hctx) {
 	return da;
 }
 
-static void update_header_cache_file(connection *con, server *srv, handler_ctx *hctx) {
-	int fd, copy_header;
+static void
+update_memory_cache_file(server *srv, connection *con, handler_ctx *hctx)
+{
+	int fd = -1, copy_header;
 	buffer *f;
 	size_t i;
 	data_string *ds, *ds2;
@@ -1395,28 +1644,30 @@ static void update_header_cache_file(connection *con, server *srv, handler_ctx *
 		
 	if (con->http_status != 200 || con->response.headers->used == 0) return;
 
-	/* open fd of asis file */
-	f = buffer_init();
-	buffer_copy_string_buffer(f, hctx->file);
-	buffer_append_string(f, ASISEXT);
+	if (hctx->use_memory == 0) {
+		/* open fd of asis file */
+		f = buffer_init();
+		buffer_copy_string_buffer(f, hctx->file);
+		buffer_append_string(f, ASISEXT);
 
-	fd = open(f->ptr, O_WRONLY|O_CREAT|O_TRUNC|O_BINARY, 0644);
-	if (fd == -1) {
-		if (errno == ENOTDIR || errno == ENOENT) {
-			if (mkdir_recursive(hctx->file->ptr, hctx->offset) == 0) {
-				fd = open(f->ptr, O_WRONLY|O_CREAT|O_TRUNC|O_BINARY, 0644);
+		fd = open(f->ptr, O_WRONLY|O_CREAT|O_TRUNC|O_BINARY, 0644);
+		if (fd == -1) {
+			if (errno == ENOTDIR || errno == ENOENT) {
+				if (mkdir_recursive(hctx->file->ptr, hctx->offset) == 0) {
+					fd = open(f->ptr, O_WRONLY|O_CREAT|O_TRUNC|O_BINARY, 0644);
+				} else {
+					buffer_free(f);
+					return;
+				}
 			} else {
 				buffer_free(f);
 				return;
 			}
-		} else {
-			buffer_free(f);
-			return;
 		}
+		buffer_free(f);
 	}
-	buffer_free(f);
 
-	/* going to update struct header_cache and asis file */
+	/* going to update struct memory_cache and asis file */
 	headers = array_init();
 	for (i = 0; i < con->response.headers->used; i++) {
 		/* skip
@@ -1480,12 +1731,14 @@ static void update_header_cache_file(connection *con, server *srv, handler_ctx *
 		}
 	}
 
-	update_header_cache(srv, hctx->hash, headers);
+	update_memory_cache_headers(srv, hctx, headers);
 	if (fd > 0) close(fd);
 	return;
 }
 
-static void delete_header_cache_file(handler_ctx *hctx) {
+static void
+delete_memory_cache_file(handler_ctx *hctx)
+{
 	/*delete header cache file*/
 	buffer *f;
 
@@ -1502,13 +1755,15 @@ static void delete_header_cache_file(handler_ctx *hctx) {
 /* check cache header or local cache header file.
  * return 0 when there has cache header
  */
-static int check_header_cache_existness(server *srv, connection *con, handler_ctx *hctx) {
+static int
+check_memory_cache_existness(server *srv, connection *con, handler_ctx *hctx)
+{
 	buffer *b;
 	int status = 0;
 	stat_cache_entry *sce = NULL;
 
 	if (hctx == NULL) return 1;
-	if (get_header_cache(hctx->hash)) return 0;
+	if (get_memory_cache(hctx)) return 0;
 
 	b = buffer_init();
 	buffer_copy_string_buffer(b, hctx->file);
@@ -1521,23 +1776,24 @@ static int check_header_cache_existness(server *srv, connection *con, handler_ct
 	
 }
 
-static void update_response_header(server *srv, connection *con, handler_ctx *hctx) {
+static void
+update_response_header(server *srv, connection *con, handler_ctx *hctx)
+{
 	data_string *ds;
 	array *b;
 	size_t i;
-	struct header_cache *node;
+	struct memory_cache *node;
 
 	if (hctx == NULL) return ;
-	node = get_header_cache(hctx->hash);
+	node = get_memory_cache(hctx);
 	if (node == NULL) {
 		if ((b = read_cache_header_file(hctx)) == NULL) return;
 		/* put asis into cache */
-		update_header_cache(srv, hctx->hash, b);
-		node = get_header_cache(hctx->hash);
+		update_memory_cache_headers(srv, hctx, b);
+		node = get_memory_cache(hctx);
 	} else {
 		b = node->headers;
 	}
-
 
 	for (i = 0; i < b->used; i++) {
 		ds = (data_string *) b->data[i];
@@ -1562,7 +1818,9 @@ static void update_response_header(server *srv, connection *con, handler_ctx *hc
  * 3) refresh pattern check
  */
 
-handler_t mod_cache_uri_handler(server *srv, connection *con, void *p_d) {
+handler_t
+mod_cache_uri_handler(server *srv, connection *con, void *p_d)
+{
 	plugin_data *p = p_d;
 	handler_ctx *hctx = con->plugin_ctx[p->id];
 	stat_cache_entry *sce = NULL;
@@ -1617,6 +1875,7 @@ handler_t mod_cache_uri_handler(server *srv, connection *con, void *p_d) {
 			buffer_append_string_buffer(p->tmpfile, con->uri.path);
 	}
 	hctx->hash = hashme(p->tmpfile);
+	buffer_copy_string_buffer(hctx->memoryid, p->tmpfile);
 
 	hctx->is_query = is_query;
 
@@ -1633,12 +1892,17 @@ handler_t mod_cache_uri_handler(server *srv, connection *con, void *p_d) {
 		   || (p->conf.purgehost_regex &&
 			   pcre_exec(p->conf.purgehost_regex, NULL, remote_ip, strlen(remote_ip), 0, 0, ovec, 3 * N) > 0)
 		   ) {
-			get_cache_filename(con, p, hctx->file);
-			if (unlink(hctx->file->ptr) == 0) con->http_status = 200;
-			else if (errno == ENOENT) con->http_status = 404;
-			else con->http_status = 403; /* EACCESS or other error */
-			buffer_append_string(hctx->file, ASISEXT);
-			unlink(hctx->file->ptr);
+			/* try local memory storage first */
+			if (delete_memory_cache(srv, hctx)) {
+				get_cache_filename(con, p, hctx->file);
+				if (unlink(hctx->file->ptr) == 0) con->http_status = 200;
+				else if (errno == ENOENT) con->http_status = 404;
+				else con->http_status = 403; /* EACCESS or other error */
+				buffer_append_string(hctx->file, ASISEXT);
+				unlink(hctx->file->ptr);
+			} else {
+				con->http_status = 200;
+			}
 		} else {
 			log_error_write(srv, __FILE__,__LINE__, "ss","don't allow PURGE from ip", remote_ip);
 			con->http_status = 403;
@@ -1678,7 +1942,6 @@ handler_t mod_cache_uri_handler(server *srv, connection *con, void *p_d) {
 	}
 
 
-	get_cache_filename(con, p, hctx->file);
 	/* default to use local cache file since now*/
 	con->use_cache_file = 1;
 
@@ -1721,6 +1984,10 @@ handler_t mod_cache_uri_handler(server *srv, connection *con, void *p_d) {
 
 				if (type & CACHE_OVERRIDE_EXPIRE) {
 					hctx->override_expire = 1;
+				}
+
+				if (type & CACHE_USE_MEMORY) {
+					hctx->use_memory = 1;
 				}
 
 				if (type & CACHE_IGNORE_CACHE_CONTROL_HEADER) {
@@ -1767,66 +2034,90 @@ handler_t mod_cache_uri_handler(server *srv, connection *con, void *p_d) {
 
 	if (expires == -1) con->use_cache_file = 0;
 
-	if (con->use_cache_file) {
-		/* check local cache file existence */
-		if (p->conf.support_accept_encoding) {
-			hctx->accepted_encoding_type = 0;
-			if (
+	if (hctx->use_memory == 0) {
+		get_cache_filename(con, p, hctx->file);
+		if (con->use_cache_file) {
+			/* check local cache file existence */
+			if (p->conf.support_accept_encoding) {
+				hctx->accepted_encoding_type = 0;
+				if (
 #ifdef LIGHTTPD_V14
-				(NULL != (ds = (data_string *)array_get_element(con->request.headers, "Accept-Encoding")))
+					(NULL != (ds = (data_string *)array_get_element(con->request.headers, "Accept-Encoding")))
 #else
-				(NULL != (ds = (data_string *)array_get_element(con->request.headers, CONST_STR_LEN("Accept-Encoding"))))
+					(NULL != (ds = (data_string *)array_get_element(con->request.headers, CONST_STR_LEN("Accept-Encoding"))))
 #endif
-			) {
-				if (strstr(ds->value->ptr, "gzip")) {
-					buffer_copy_string_buffer(hctx->gzipfile, hctx->file);
-					buffer_append_string_len(hctx->gzipfile, CONST_STR_LEN(".gzip"));
-					if (HANDLER_ERROR != stat_cache_get_entry(srv, con, hctx->gzipfile, &sce)) {
-						hctx->accepted_encoding_type = 1;
+				) {
+					if (strstr(ds->value->ptr, "gzip")) {
+						buffer_copy_string_buffer(hctx->gzipfile, hctx->file);
+						buffer_append_string_len(hctx->gzipfile, CONST_STR_LEN(".gzip"));
+						if (HANDLER_ERROR != stat_cache_get_entry(srv, con, hctx->gzipfile, &sce)) {
+							hctx->accepted_encoding_type = 1;
+						}
+					} else if (strstr(ds->value->ptr, "deflate")) {
+						buffer_copy_string_buffer(hctx->gzipfile, hctx->file);
+						buffer_append_string_len(hctx->gzipfile, CONST_STR_LEN(".deflate"));
+						if (HANDLER_ERROR != stat_cache_get_entry(srv, con, hctx->gzipfile, &sce)) {
+							hctx->accepted_encoding_type = 2;
+						}
 					}
-				} else if (strstr(ds->value->ptr, "deflate")) {
-					buffer_copy_string_buffer(hctx->gzipfile, hctx->file);
-					buffer_append_string_len(hctx->gzipfile, CONST_STR_LEN(".deflate"));
-					if (HANDLER_ERROR != stat_cache_get_entry(srv, con, hctx->gzipfile, &sce)) {
-						hctx->accepted_encoding_type = 2;
+				}
+			}
+
+			if (hctx->accepted_encoding_type == 0 && (HANDLER_ERROR == stat_cache_get_entry(srv, con, hctx->file, &sce)))
+				con->use_cache_file = 0;
+
+			if (con->use_cache_file && check_memory_cache_existness(srv, con, hctx)) {
+				con->use_cache_file = 0;
+				hctx->accepted_encoding_type = 0;
+			}
+
+			if (con->use_cache_file == 1) {
+				hctx->local_hit = 1;
+				hctx->file_mtime = sce->st.st_mtime;
+				if (!S_ISREG(sce->st.st_mode)) {
+					if (p->conf.debug)
+						log_error_write(srv, __FILE__, __LINE__, "bs", hctx->file, "isn't regular cache file:");
+					con->use_cache_file = 0;
+				} else if (expires > 0 && (srv->cur_ts - sce->st.st_ctime) > expires) {
+					con->use_cache_file = 0;
+					if (p->conf.debug)
+						log_error_write(srv, __FILE__, __LINE__, "bs", hctx->file, "expired:");
+				} else {
+					/* use local cache now */
+					if (hctx->no_expire_header == 0) {
+						if (expires == 0) {
+							/* never expires */
+							hctx->expires = 0x7fffffff;
+							hctx->timeout = 0;
+						} else {
+							hctx->expires = sce->st.st_ctime + expires;
+							hctx->timeout = hctx->expires - srv->cur_ts;
+						}
+					} else {
+						hctx->expires = -1;
 					}
 				}
 			}
 		}
-
-		if (hctx->accepted_encoding_type == 0 && (HANDLER_ERROR == stat_cache_get_entry(srv, con, hctx->file, &sce)))
-		   con->use_cache_file = 0;
-
-		if (con->use_cache_file && check_header_cache_existness(srv, con, hctx)) {
+	} else if (con->use_cache_file == 1) {
+		/* use memory storage */
+		struct memory_cache *mc;
+		mc = get_memory_cache(hctx);
+		if (mc == NULL || mc->inuse == 0) {
 			con->use_cache_file = 0;
-			hctx->accepted_encoding_type = 0;
-		}
-
-		if (con->use_cache_file == 1) {
-			hctx->local_hit = 1;
-			hctx->file_mtime = sce->st.st_mtime;
-			if (!S_ISREG(sce->st.st_mode)) {
-				if (p->conf.debug)
-					log_error_write(srv, __FILE__, __LINE__, "bs", hctx->file, "isn't regular cache file:");
-				con->use_cache_file = 0;
-			} else if (expires > 0 && (srv->cur_ts - sce->st.st_ctime) > expires) {
-				con->use_cache_file = 0;
-				if (p->conf.debug)
-					log_error_write(srv, __FILE__, __LINE__, "bs", hctx->file, "expired:");
-			} else {
-				/* use local cache now */
-				if (hctx->no_expire_header == 0) {
-					if (expires == 0) {
-						/* never expires */
-						hctx->expires = 0x7fffffff;
-						hctx->timeout = 0;
-					} else {
-						hctx->expires = sce->st.st_ctime + expires;
-						hctx->timeout = hctx->expires - srv->cur_ts;
-					}
+		} else {
+			con->mode = p->id;
+			if (hctx->no_expire_header == 0) {
+				if (expires == 0) {
+					/* never expires */
+					hctx->expires = 0x7fffffff;
+					hctx->timeout = 0;
 				} else {
-					hctx->expires = -1;
+					hctx->expires = srv->cur_ts + expires;
+					hctx->timeout = expires;
 				}
+			} else {
+				hctx->expires = -1;
 			}
 		}
 	}
@@ -1849,7 +2140,7 @@ handler_t mod_cache_uri_handler(server *srv, connection *con, void *p_d) {
 		) {
 		/* check Range: bytes=xxx- request header */
 		range_request = splaytree_splay(range_request, hctx->hash);
-		if (range_request == NULL || range_request->key != (int)hctx->hash) {
+		if ((hctx->use_memory == 0) && (range_request == NULL || range_request->key != (int)hctx->hash)) {
 			/* tell mod_proxy to remove Range: bytes=xxx header */
 			con->remove_range_request_header = 1;
 			range_request = splaytree_insert(range_request, hctx->hash, NULL);
@@ -1865,15 +2156,16 @@ handler_t mod_cache_uri_handler(server *srv, connection *con, void *p_d) {
 		reqhit++;
 
 #ifdef LIGHTTPD_V14
-	status_counter_set(srv, CONST_STR_LEN("cache.hitrate(%)"), ((float)reqhit/(float)reqcount)*100);
+	status_counter_set(srv, CONST_STR_LEN(CACHE_HIT_PERCENT), ((float)reqhit/(float)reqcount)*100);
 #else
 	COUNTER_SET(cache_hit_percent, ((float)reqhit/(float)reqcount)*100);
 #endif
-
 	return HANDLER_GO_ON;
 }
 
-handler_t mod_cache_docroot_handler(server *srv, connection *con, void *p_d) {
+handler_t
+mod_cache_docroot_handler(server *srv, connection *con, void *p_d)
+{
 	plugin_data *p = p_d;
 	size_t i;
 	data_string *ds;
@@ -1896,7 +2188,7 @@ handler_t mod_cache_docroot_handler(server *srv, connection *con, void *p_d) {
 		return HANDLER_GO_ON;
 	}
 
-	if (con->use_cache_file) {
+	if (con->use_cache_file && hctx->use_memory == 0) {
 		buffer *b;
 		/* set doc root here */
 		if (p->conf.cache_bases->used == 1) i = 0;
@@ -1923,13 +2215,63 @@ handler_t mod_cache_docroot_handler(server *srv, connection *con, void *p_d) {
 			buffer_append_string_len(con->physical.rel_path, CONST_STR_LEN(".gzip"));
 		else if (hctx->accepted_encoding_type == 2) /* append ".deflate" */
 			buffer_append_string_len(con->physical.rel_path, CONST_STR_LEN(".deflate"));
+
+		con->mode = DIRECT;
 	}
 
 	return HANDLER_GO_ON;
 }
 
-handler_t mod_cache_handle_response_start(server *srv, connection *con, void *p_d) {
+handler_t
+mod_cache_handle_memory_storage(server *srv, connection *con, void *p_d)
+{
+	plugin_data *p = p_d;
+	handler_ctx *hctx = con->plugin_ctx[p->id];
+	struct memory_cache *mc;
 
+	if (con->uri.path->used == 0) return HANDLER_GO_ON;
+
+	/* someone else has handled this request */
+	if (con->mode != p->id || con->use_cache_file == 0 || hctx == NULL || hctx->use_memory == 0) return HANDLER_GO_ON;
+
+#ifdef LIGHTTPD_V14
+	if (con->file_finished) return HANDLER_GO_ON;
+#else
+	if (con->send->is_closed) return HANDLER_GO_ON;
+#endif
+	/* we only handle GET, POST and HEAD */
+	switch(con->request.http_method) {
+	case HTTP_METHOD_GET:
+	case HTTP_METHOD_HEAD:
+		break;
+	default:
+		return HANDLER_GO_ON;
+	}
+	
+	mod_cache_patch_connection(srv, con, p);
+
+	if (p->conf.debug)
+		log_error_write(srv, __FILE__, __LINE__, "s", "-- mod_cache_handle_memory_storage called");
+
+	if (used_memory_size > p->conf.max_memory_size)
+		free_memory_cache_by_lru(srv, 100);
+	mc = get_memory_cache(hctx);
+	if (mc && mc->inuse && mc->content != NULL) {
+#ifdef LIGHTTPD_V14
+		chunkqueue_append_shared_buffer(con->write_queue, mc->content); // use shared buffer
+		con->file_finished = 1;
+#else
+		chunkqueue_append_shared_buffer(con->send, mc->content); // use shared buffer
+		con->send->is_closed = 1;
+#endif
+		return HANDLER_FINISHED;
+	}
+	return HANDLER_GO_ON;
+}
+
+handler_t
+mod_cache_handle_response_start(server *srv, connection *con, void *p_d)
+{
 	plugin_data *p = p_d;
 	data_string *ds;
 	stat_cache_entry *sce = NULL;
@@ -1987,15 +2329,17 @@ handler_t mod_cache_handle_response_start(server *srv, connection *con, void *p_
 		return HANDLER_GO_ON;
 	}
 	
-	if (con->write_cache_file == 0 || hctx->file->used == 0)  return HANDLER_GO_ON;
+	if (con->write_cache_file == 0 || (hctx->use_memory == 0 && hctx->file->used == 0))  return HANDLER_GO_ON;
 
 	if (con->http_status == 404) {
 		/* delete cache file */
-		if (unlink(hctx->file->ptr) == 0 && p->conf.debug)
-			log_error_write(srv, __FILE__, __LINE__, "sb", "backend return 404 to delete cache file", hctx->file);
+		if (hctx->use_memory == 0) {
+			if (unlink(hctx->file->ptr) == 0 && p->conf.debug)
+				log_error_write(srv, __FILE__, __LINE__, "sb", "backend return 404 to delete cache file", hctx->file);
 
-		delete_header_cache(srv, hctx->hash);
-		delete_header_cache_file(hctx);
+			delete_memory_cache_file(hctx);
+		}
+		delete_memory_cache(srv, hctx);
 		return HANDLER_GO_ON;
 	}
 
@@ -2019,7 +2363,7 @@ handler_t mod_cache_handle_response_start(server *srv, connection *con, void *p_
 	/* only http status 200 now */
 	if (check_response_iscachable(srv, con, p, hctx) == 0) return HANDLER_GO_ON;
 
-	if (p->conf.support_accept_encoding) {
+	if (hctx->use_memory == 0 && p->conf.support_accept_encoding) {
 #ifdef LIGHTTPD_V14
 		if (NULL != (ds = (data_string *)array_get_element(con->response.headers, "Content-Encoding"))) {
 #else
@@ -2052,6 +2396,12 @@ handler_t mod_cache_handle_response_start(server *srv, connection *con, void *p_
 	cache_save = splaytree_insert(cache_save, hctx->hash, NULL);
 	hctx->remove_cache_save = 1;
 
+	if (hctx->use_memory == 1) {
+		hctx->savecontent = buffer_init();
+		update_memory_cache_file(srv, con, hctx);
+		return HANDLER_GO_ON;
+	}
+
 	if (hctx->accepted_encoding_type > 0)
 		file = hctx->gzipfile;
 	else
@@ -2060,7 +2410,7 @@ handler_t mod_cache_handle_response_start(server *srv, connection *con, void *p_
 	/* create directory if needed */
 	if (HANDLER_ERROR != stat_cache_get_entry(srv, con, file, &sce)) {
  		/* file exists */
-		if (0 == check_header_cache_existness(srv, con, hctx) && hctx->mtime && (hctx->mtime <= sce->st.st_mtime)) {
+		if (0 == check_memory_cache_existness(srv, con, hctx) && hctx->mtime && (hctx->mtime <= sce->st.st_mtime)) {
 			/*
 			 * update local copy's change time only
 			 */
@@ -2105,30 +2455,47 @@ handler_t mod_cache_handle_response_start(server *srv, connection *con, void *p_
 		} else return HANDLER_GO_ON;
 	}
 
-	update_header_cache_file(con, srv, hctx);
+	update_memory_cache_file(srv, con, hctx);
 
 	return HANDLER_GO_ON;
 }
 
-handler_t mod_cache_handle_response_filter(server *srv, connection *con, void *p_d) {
+handler_t
+mod_cache_handle_response_filter(server *srv, connection *con, void *p_d)
+{
 	plugin_data *p = p_d;
 	handler_ctx *hctx = con->plugin_ctx[p->id];
 
-	if(con->request.http_method == HTTP_METHOD_GET && hctx &&  hctx->fd > 0 && hctx->error == 0) {
+	if (hctx == NULL) return HANDLER_GO_ON;
+
+	if (con->request.http_method == HTTP_METHOD_GET && hctx->error == 0) {
+		if (hctx->use_memory && hctx->savecontent != NULL) {
 #ifdef LIGHTTPD_V14
-		if (save_chunkqueue(hctx->fd, con->write_queue) < 0) {
+			if (copy_chunkqueue_to_memory(srv, hctx, con->write_queue) < 0) {
 #else
-		if (save_chunkqueue(hctx->fd, con->send) < 0) {
+			if (copy_chunkqueue_to_memory(srv, hctx, con->send) < 0) {
 #endif
-			log_error_write(srv, __FILE__, __LINE__, "sbss", "failed to save cache file ",
-					hctx->file, ":", strerror(errno));
-			hctx->error = errno;
+				log_error_write(srv, __FILE__, __LINE__, "s", "failed to save to memory storage");
+				hctx->error = -1;
+			}
+		} else if(hctx->fd > 0) {
+#ifdef LIGHTTPD_V14
+			if (save_chunkqueue(hctx->fd, con->write_queue) < 0) {
+#else
+			if (save_chunkqueue(hctx->fd, con->send) < 0) {
+#endif
+				log_error_write(srv, __FILE__, __LINE__, "sbss", "failed to save cache file ",
+						hctx->file, ":", strerror(errno));
+				hctx->error = errno;
+			}
 		}
 	}
 	return HANDLER_GO_ON;
 }
 
-handler_t mod_cache_cleanup(server *srv, connection *con, void *p_d) {
+handler_t
+mod_cache_cleanup(server *srv, connection *con, void *p_d)
+{
 	plugin_data *p = p_d;
 	handler_ctx *hctx = con->plugin_ctx[p->id];
 	off_t len;
@@ -2141,7 +2508,37 @@ handler_t mod_cache_cleanup(server *srv, connection *con, void *p_d) {
 
 	if(hctx) {
 		con->plugin_ctx[p->id] = NULL;
-		if (hctx->fd > 0) {
+		if (hctx->use_memory == 1 && hctx->savecontent) {
+			struct memory_cache *mc;
+			if (hctx->error == 0 && con->state != CON_STATE_ERROR && 
+				((hctx->savecontent->used == (con->response.content_length+1) || con->response.content_length == -1))) {
+				mc = get_memory_cache(hctx);
+				if (mc) {
+					if (mc->content) {
+						used_memory_size -= mc->content->size;
+						mc->content->ref_count --; // remove share buffer flag
+						buffer_free(mc->content);
+					}
+					if (p->conf.debug)
+						log_error_write(srv, __FILE__, __LINE__, "sbbs", "save http://", con->uri.authority, con->uri.path, "to memory");
+					mc->content = hctx->savecontent;
+					hctx->savecontent = NULL;
+					mc->inuse = 1;
+					memory_cache_number ++;
+					mc->content->ref_count = 1; /* setup shared flag */
+					used_memory_size += mc->content->size;
+					if (used_memory_size < 0) used_memory_size = 0;
+					if (memory_cache_number < 0) memory_cache_number = 0;
+#ifdef LIGHTTPD_V14
+					status_counter_set(srv, CONST_STR_LEN(CACHE_MEMORY), used_memory_size >> 20);
+					status_counter_set(srv, CONST_STR_LEN(CACHE_MEMORY_ITEMS), memory_cache_number);
+#else
+					COUNTER_SET(cache_memory, used_memory_size >> 20);
+					COUNTER_SET(cache_memory_items, memory_cache_number);
+#endif
+				}
+			}
+		} else if (hctx->fd > 0) {
 			len = lseek(hctx->fd, 0, SEEK_CUR);
 			close(hctx->fd);
 			hctx->fd = 0;
@@ -2198,9 +2595,11 @@ int mod_cache_plugin_init(plugin *p) {
 #ifdef LIGHTTPD_V14
 	p->handle_response_start = mod_cache_handle_response_start;
 	p->handle_response_filter = mod_cache_handle_response_filter;
+	p->handle_subrequest = mod_cache_handle_memory_storage;
 #else
 	p->handle_response_header = mod_cache_handle_response_start;
 	p->handle_filter_response_content = mod_cache_handle_response_filter;
+	p->handle_start_backend = mod_cache_handle_memory_storage;
 #endif
 	p->handle_connection_close = mod_cache_cleanup;
 	p->connection_reset = mod_cache_cleanup;
