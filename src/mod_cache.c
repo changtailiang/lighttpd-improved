@@ -2106,17 +2106,13 @@ mod_cache_uri_handler(server *srv, connection *con, void *p_d)
 			con->use_cache_file = 0;
 		} else {
 			con->mode = p->id;
-			if (hctx->no_expire_header == 0) {
-				if (expires == 0) {
-					/* never expires */
-					hctx->expires = 0x7fffffff;
-					hctx->timeout = 0;
-				} else {
-					hctx->expires = srv->cur_ts + expires;
-					hctx->timeout = expires;
-				}
+			if (expires == 0) {
+				/* never expires */
+				hctx->expires = 0x7fffffff;
+				hctx->timeout = 0;
 			} else {
-				hctx->expires = -1;
+				hctx->expires = srv->cur_ts + expires;
+				hctx->timeout = expires;
 			}
 		}
 	}
@@ -2532,6 +2528,9 @@ mod_cache_cleanup(server *srv, connection *con, void *p_d)
 					memory_cache_number ++;
 					mc->content->ref_count = 1; /* setup shared flag */
 					used_memory_size += mc->content->size;
+					/* update memory items expire time */
+					if (hctx->expires > 0) mc->expires_time = hctx->expires;
+					else mc->expires_time = srv->cur_ts + 60; /* 1 minutes */
 #ifdef LIGHTTPD_V14
 					status_counter_set(srv, CONST_STR_LEN(CACHE_MEMORY), used_memory_size >> 20);
 					status_counter_set(srv, CONST_STR_LEN(CACHE_MEMORY_ITEMS), memory_cache_number);
