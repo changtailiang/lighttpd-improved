@@ -163,7 +163,7 @@ typedef struct
 	unsigned short dynamic_mode;
 	array *programs_ext;
 
-	int max_memory_size;
+	uint32_t max_memory_size;
 } plugin_config;
 
 /* use in refresh_pattern_type */
@@ -207,8 +207,8 @@ static int lrustart = 0, lruend = 0;
 #define MEMCACHE_MASK (MEMCACHE_NUMBER-1)
 
 /* variables for status report */
-static int used_memory_size, local_cache_number = 0, memory_cache_number = 0;
-static uint32_t reqhit, reqcount;
+static int local_cache_number = 0, memory_cache_number = 0;
+static uint32_t used_memory_size, reqhit, reqcount;
 
 typedef struct {
 	PLUGIN_DATA;
@@ -500,14 +500,21 @@ static void
 memory_cache_free(struct memory_cache *cache)
 {
 	if (cache == NULL) return;
-	local_cache_number --;
+	if (cache->headers || cache->memoryid) {
+		local_cache_number --;
+		if (local_cache_number < 0) local_cache_number = 0;
+	}
 	array_free(cache->headers);
 	buffer_free(cache->memoryid);
 	if (cache->content) {
-		used_memory_size -= cache->content->size;
+		if (used_memory_size <= cache->content->size)
+			used_memory_size = 0;
+		else
+			used_memory_size -= cache->content->size;
 		cache->content->ref_count --; // remove share buffer flag
 		buffer_free(cache->content);
-		if (cache->inuse) memory_cache_number --;
+		if (cache->inuse && memory_cache_number > 0)
+			memory_cache_number --;
 	}
 	free(cache);
 }
@@ -631,9 +638,6 @@ free_memory_cache_by_lru(server *srv, const int num)
 		if (lrustart == 0) { lrustart = lruend = 0; break; }
 	}
 
-	if (used_memory_size < 0) used_memory_size = 0;
-	if (memory_cache_number < 0) memory_cache_number = 0;
-	if (local_cache_number < 0) local_cache_number = 0;
 #ifdef LIGHTTPD_V14
 	status_counter_set(srv, CONST_STR_LEN(CACHE_MEMORY), used_memory_size >> 20);
 	status_counter_set(srv, CONST_STR_LEN(CACHE_MEMORY_ITEMS), memory_cache_number);
@@ -716,7 +720,7 @@ get_memory_cache(handler_ctx *hctx)
 }
 
 void
-update_memory_cache_headers(server *srv, handler_ctx *hctx, array *d)
+update_memory_cache_headers(handler_ctx *hctx, array *d)
 {
 	unsigned int i;
 	struct memory_cache *c, *c1;
@@ -758,12 +762,6 @@ update_memory_cache_headers(server *srv, handler_ctx *hctx, array *d)
 		c->headers = d;
 	}
 	update_lru(i);
-	if (local_cache_number < 0) local_cache_number = 0;
-#ifdef LIGHTTPD_V14
-	status_counter_set(srv, CONST_STR_LEN(CACHE_LOCAL_ITEMS), local_cache_number);
-#else
-	COUNTER_SET(cache_items, local_cache_number);
-#endif
 	return;
 }
 
@@ -812,21 +810,22 @@ delete_memory_cache(server *srv, handler_ctx *hctx)
 	}
 
 	update_lru(i);
-	local_cache_number --;
+	if ((c->headers || c->memoryid) && local_cache_number > 0)
+		local_cache_number --;
 	if (c->headers) array_free(c->headers);
 	if (c->memoryid) buffer_free(c->memoryid);
 	if (c->content) {
-		used_memory_size -= c->content->size;
-		if (c->inuse)
+		if (used_memory_size <= c->content->size)
+			used_memory_size = 0;
+		else
+			used_memory_size -= c->content->size;
+		if (c->inuse && memory_cache_number > 0)
 			memory_cache_number --;
 		c->content->ref_count --; // remove share buffer flag
 		buffer_free(c->content);
 	}
 	free(c);
 
-	if (used_memory_size < 0) used_memory_size = 0;
-	if (memory_cache_number < 0) memory_cache_number = 0;
-	if (local_cache_number < 0) local_cache_number = 0;
 #ifdef LIGHTTPD_V14
 	status_counter_set(srv, CONST_STR_LEN(CACHE_MEMORY), used_memory_size >> 20);
 	status_counter_set(srv, CONST_STR_LEN(CACHE_MEMORY_ITEMS), memory_cache_number);
@@ -1634,7 +1633,7 @@ read_cache_header_file(handler_ctx *hctx)
 }
 
 static void
-update_memory_cache_file(server *srv, connection *con, handler_ctx *hctx)
+update_memory_cache_file(connection *con, handler_ctx *hctx)
 {
 	int fd = -1, copy_header;
 	buffer *f;
@@ -1731,7 +1730,7 @@ update_memory_cache_file(server *srv, connection *con, handler_ctx *hctx)
 		}
 	}
 
-	update_memory_cache_headers(srv, hctx, headers);
+	update_memory_cache_headers(hctx, headers);
 	if (fd > 0) close(fd);
 	return;
 }
@@ -1789,7 +1788,7 @@ update_response_header(server *srv, connection *con, handler_ctx *hctx)
 	if (node == NULL) {
 		if ((b = read_cache_header_file(hctx)) == NULL) return;
 		/* put asis into cache */
-		update_memory_cache_headers(srv, hctx, b);
+		update_memory_cache_headers(hctx, b);
 		node = get_memory_cache(hctx);
 	} else {
 		b = node->headers;
@@ -2255,6 +2254,7 @@ mod_cache_handle_memory_storage(server *srv, connection *con, void *p_d)
 
 	if (used_memory_size > p->conf.max_memory_size)
 		free_memory_cache_by_lru(srv, 100);
+
 	mc = get_memory_cache(hctx);
 	if (mc && mc->inuse && mc->content != NULL) {
 #ifdef LIGHTTPD_V14
@@ -2398,7 +2398,7 @@ mod_cache_handle_response_start(server *srv, connection *con, void *p_d)
 
 	if (hctx->use_memory == 1) {
 		hctx->savecontent = buffer_init();
-		update_memory_cache_file(srv, con, hctx);
+		update_memory_cache_file(con, hctx);
 		return HANDLER_GO_ON;
 	}
 
@@ -2455,7 +2455,7 @@ mod_cache_handle_response_start(server *srv, connection *con, void *p_d)
 		} else return HANDLER_GO_ON;
 	}
 
-	update_memory_cache_file(srv, con, hctx);
+	update_memory_cache_file(con, hctx);
 
 	return HANDLER_GO_ON;
 }
@@ -2515,9 +2515,14 @@ mod_cache_cleanup(server *srv, connection *con, void *p_d)
 				mc = get_memory_cache(hctx);
 				if (mc) {
 					if (mc->content) {
-						used_memory_size -= mc->content->size;
+						if (used_memory_size <= mc->content->size)
+							used_memory_size = 0;
+						else
+							used_memory_size -= mc->content->size;
 						mc->content->ref_count --; // remove share buffer flag
 						buffer_free(mc->content);
+						if (mc->inuse && memory_cache_number > 0)
+							memory_cache_number --;
 					}
 					if (p->conf.debug)
 						log_error_write(srv, __FILE__, __LINE__, "sbbs", "save http://", con->uri.authority, con->uri.path, "to memory");
@@ -2527,14 +2532,14 @@ mod_cache_cleanup(server *srv, connection *con, void *p_d)
 					memory_cache_number ++;
 					mc->content->ref_count = 1; /* setup shared flag */
 					used_memory_size += mc->content->size;
-					if (used_memory_size < 0) used_memory_size = 0;
-					if (memory_cache_number < 0) memory_cache_number = 0;
 #ifdef LIGHTTPD_V14
 					status_counter_set(srv, CONST_STR_LEN(CACHE_MEMORY), used_memory_size >> 20);
 					status_counter_set(srv, CONST_STR_LEN(CACHE_MEMORY_ITEMS), memory_cache_number);
+					status_counter_set(srv, CONST_STR_LEN(CACHE_LOCAL_ITEMS), local_cache_number);
 #else
 					COUNTER_SET(cache_memory, used_memory_size >> 20);
 					COUNTER_SET(cache_memory_items, memory_cache_number);
+					COUNTER_SET(cache_local_items, local_cache_number);
 #endif
 				}
 			}
