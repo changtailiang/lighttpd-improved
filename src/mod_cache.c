@@ -1,4 +1,4 @@
-/* 
+/*
 
 Copyright (c) 2006, 2009 QUE Hongyu
 
@@ -106,13 +106,11 @@ SUCH DAMAGE.
 #ifndef LIGHTTPD_V14
 /* splaytree definitions */
 typedef struct tree_node {
-    struct tree_node * left, * right;
-    int key;
-    int size;   /* maintained to be the number of nodes rooted here */
-
-    void *data;
+	struct tree_node * left, * right;
+	int key;
+	int size;   /* maintained to be the number of nodes rooted here */
+	void *data;
 } splay_tree;
-
 
 splay_tree * splaytree_splay (splay_tree *t, int key);
 splay_tree * splaytree_insert(splay_tree *t, int key, void *data);
@@ -120,7 +118,7 @@ splay_tree * splaytree_delete(splay_tree *t, int key);
 splay_tree * splaytree_size(splay_tree *t);
 
 #define splaytree_size(x) (((x)==NULL) ? 0 : ((x)->size))
-/* This macro returns the size of a node.  Unlike "x->size",     */
+/* This macro returns the size of a node.  Unlike "x->size", */
 /* it works even if x=NULL.  The test could be avoided by using  */
 /* a special version of NULL which was a real node with size 0.  */
 
@@ -184,7 +182,6 @@ struct header_cache{
 	char expires[sizeof("Sat, 23 Jul 2005 21:20:01 GMT")+2];
 	char max_age[20];
 	time_t expires_time;
-	time_t cache_timeout;
 
 	struct header_cache *scnext;
 };
@@ -201,7 +198,7 @@ static unsigned long usedmemory, reqhit, reqcount, cachenumber = 0;
 typedef struct {
 	PLUGIN_DATA;
 	plugin_config **config_storage;
-	plugin_config conf; 
+	plugin_config conf;
 
 	buffer *tmpfile;
 } plugin_data;
@@ -217,11 +214,11 @@ typedef struct {
 	unsigned short accepted_encoding_type; /* 1 -> gzip, 2 -> deflate, 3 -> both */
 
 	unsigned int is_query:1;
-	unsigned int flv_streaming:1; 
+	unsigned int flv_streaming:1;
 	/* local cache file meet */
 	unsigned int local_hit:1;
 	/* add expire header or not */
-	unsigned int no_expire_header:1; 
+	unsigned int no_expire_header:1;
 	/* override response's expire header */
 	unsigned int override_expire:1;
 	/* ignore cache-control response header */
@@ -247,8 +244,8 @@ typedef struct {
 #ifndef LIGHTTPD_V14
 /* splaytree implementation */
 /*
-           An implementation of top-down splaying with sizes
-             D. Sleator <sleator@cs.cmu.edu>, January 1994.
+	An implementation of top-down splaying with sizes
+		D. Sleator <sleator@cs.cmu.edu>, January 1994.
 
   This extends top-down-splay.c to maintain a size field in each node.
   This is the number of nodes in the subtree rooted there.  This makes
@@ -276,7 +273,7 @@ typedef struct {
   item being splayed is not in the tree, and even if the tree root of the
   tree is NULL.  So the line:
 
-                              t = splay(i, t);
+	t = splay(i, t);
 
   causes it to search for item with key i in the tree rooted at t.  If it's
   there, it is splayed to the root.  If it isn't there, then the node put
@@ -285,18 +282,18 @@ typedef struct {
   allows many other operations to be easily implemented, as shown below.
 
   [1] "Data Structures and Their Algorithms", Lewis and Denenberg,
-       Harper Collins, 1991, pp 243-251.
+  	Harper Collins, 1991, pp 243-251.
   [2] "Self-adjusting Binary Search Trees" Sleator and Tarjan,
-       JACM Volume 32, No 3, July 1985, pp 652-686.
+  	JACM Volume 32, No 3, July 1985, pp 652-686.
   [3] "Data Structure and Algorithm Analysis", Mark Weiss,
-       Benjamin Cummins, 1992, pp 119-130.
+  	Benjamin Cummins, 1992, pp 119-130.
   [4] "Data Structures, Algorithms, and Performance", Derick Wood,
-       Addison-Wesley, 1993, pp 367-375
+  	Addison-Wesley, 1993, pp 367-375
 */
 
 #define compare(i,j) ((i)-(j))
-/* This is the comparison.                                       */
-/* Returns <0 if i<j, =0 if i=j, and >0 if i>j                   */
+/* This is the comparison. */
+/* Returns <0 if i<j, =0 if i=j, and >0 if i>j */
 
 #define node_size splaytree_size
 
@@ -617,7 +614,7 @@ static void update_header_cache(server *srv, uint32_t hash, array *d) {
 static void update_asis_expires_cache(struct header_cache *cc, time_t exp, int timeout) {
 	if (cc == NULL || exp == 0) return;
 	if (cc->expires_time == exp) return;
-	strftime(cc->expires, sizeof("Fri, 01 Jan 1990 00:00:00 GMT")+1, 
+	strftime(cc->expires, sizeof("Fri, 01 Jan 1990 00:00:00 GMT")+1,
 			"%a, %d %b %Y %H:%M:%S GMT", gmtime(&exp));
 	cc->expires_time = exp;
 	if (timeout > 0) {
@@ -670,18 +667,18 @@ SETDEFAULTS_FUNC(mod_cache_set_defaults) {
 	size_t i = 0;
 	data_unset *du;
 	
-	config_values_t cv[] = { 
-		{ CONFIG_CACHE_SUPPORT_QUERIES, NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION },  /* 0 */
-		{ CONFIG_CACHE_ENABLE, NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION },       /* 1 */
-		{ CONFIG_CACHE_BASES, NULL, T_CONFIG_ARRAY, T_CONFIG_SCOPE_CONNECTION },       /* 2 */
-		{ CONFIG_CACHE_REFRESH_PATTERN, NULL, T_CONFIG_LOCAL, T_CONFIG_SCOPE_CONNECTION },       /* 3 */
-		{ CONFIG_CACHE_DEBUG, NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION },       /* 4 */
-		{ CONFIG_CACHE_DOMAINS, NULL, T_CONFIG_ARRAY, T_CONFIG_SCOPE_CONNECTION },       /* 5 */
-		{ CONFIG_CACHE_PURGE_HOST, NULL, T_CONFIG_STRING, T_CONFIG_SCOPE_CONNECTION },       /* 6 */
-		{ CONFIG_CACHE_IGNORE_HOSTNAME, NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION },       /* 7 */
-		{ CONFIG_CACHE_DYNAMIC_MODE, NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION },       /* 8 */
-		{ CONFIG_CACHE_PROGRAMS_EXT, NULL, T_CONFIG_ARRAY, T_CONFIG_SCOPE_CONNECTION },       /* 9 */
-		{ CONFIG_CACHE_SUPPORT_ACCEPT_ENCODING, NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION },       /* 10 */
+	config_values_t cv[] = {
+		{ CONFIG_CACHE_SUPPORT_QUERIES, NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION }, /* 0 */
+		{ CONFIG_CACHE_ENABLE, NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION }, /* 1 */
+		{ CONFIG_CACHE_BASES, NULL, T_CONFIG_ARRAY, T_CONFIG_SCOPE_CONNECTION }, /* 2 */
+		{ CONFIG_CACHE_REFRESH_PATTERN, NULL, T_CONFIG_LOCAL, T_CONFIG_SCOPE_CONNECTION }, /* 3 */
+		{ CONFIG_CACHE_DEBUG, NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION }, /* 4 */
+		{ CONFIG_CACHE_DOMAINS, NULL, T_CONFIG_ARRAY, T_CONFIG_SCOPE_CONNECTION }, /* 5 */
+		{ CONFIG_CACHE_PURGE_HOST, NULL, T_CONFIG_STRING, T_CONFIG_SCOPE_CONNECTION }, /* 6 */
+		{ CONFIG_CACHE_IGNORE_HOSTNAME, NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION }, /* 7 */
+		{ CONFIG_CACHE_DYNAMIC_MODE, NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION }, /* 8 */
+		{ CONFIG_CACHE_PROGRAMS_EXT, NULL, T_CONFIG_ARRAY, T_CONFIG_SCOPE_CONNECTION }, /* 9 */
+		{ CONFIG_CACHE_SUPPORT_ACCEPT_ENCODING, NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION }, /* 10 */
 		{ NULL, NULL, T_CONFIG_UNSET, T_CONFIG_SCOPE_UNSET }
 	};
 	
@@ -792,7 +789,7 @@ SETDEFAULTS_FUNC(mod_cache_set_defaults) {
 		}
 		for (m = 0; m < da->value->used; m++) {
 			if (da->value->data[m]->type != TYPE_STRING) {
-				log_error_write(srv, __FILE__, __LINE__, "sbs", 
+				log_error_write(srv, __FILE__, __LINE__, "sbs",
 						"unexpected type for key: cache.refresh-pattern [", da->value->data[m]->key, "](string)");
 				return HANDLER_ERROR;
 			}
@@ -808,12 +805,12 @@ SETDEFAULTS_FUNC(mod_cache_set_defaults) {
 			}
 			s->rp[m].regex = pcregex;
 
-			/* value 
+			/* value
 			 * format: "minutes options"
 			 */
 			p2 = strdup(ds->value->ptr);
 			p3 = strchr(p2, ' ');
-			s->rp[m].type = 0; 
+			s->rp[m].type = 0;
 			if (p3) {
 				p3[0] = '\0';
 				p3 ++;
@@ -821,9 +818,9 @@ SETDEFAULTS_FUNC(mod_cache_set_defaults) {
 			while (p3) {
 				p6 = strchr(p3, ' ');
 				if (p6) *p6 = '\0';
-				if (strncmp(p3, "ignore-reload", sizeof("ignore-reload")) == 0) 
+				if (strncmp(p3, "ignore-reload", sizeof("ignore-reload")) == 0)
 					s->rp[m].type |= CACHE_IGNORE_RELOAD;
-			       	else if (strncmp(p3, "update-on-refresh",  sizeof("update-on-refresh")) == 0 ||
+				else if (strncmp(p3, "update-on-refresh",  sizeof("update-on-refresh")) == 0 ||
 					 strncmp(p3, "update-on-nocache",  sizeof("update-on-nocache")) == 0)
 					s->rp[m].type |= CACHE_UPDATE_ON_REFRESH;
 				else if (strncmp(p3, "no-expire-header", sizeof("no-expire-header")) == 0)
@@ -834,10 +831,9 @@ SETDEFAULTS_FUNC(mod_cache_set_defaults) {
 					s->rp[m].type |= CACHE_FLV_STREAMING;
 				else if (strncmp(p3, "ignore-cache-control-header", sizeof("ignore-cache-control-header")) == 0)
 					s->rp[m].type |= CACHE_IGNORE_CACHE_CONTROL_HEADER;
-			       	else if (strncmp(p3, "nocache",  sizeof("nocache")) == 0 ||
-					 strncmp(p3, "no-cache", sizeof("no-cache")) == 0)
+				else if (strncmp(p3, "nocache",  sizeof("nocache")) == 0 || strncmp(p3, "no-cache", sizeof("no-cache")) == 0)
 					s->rp[m].type |= CACHE_NOCACHE;
-			       	else if (strncmp(p3, "fetchall-for-range-request", sizeof("fetchall-for-range-request")) == 0)
+				else if (strncmp(p3, "fetchall-for-range-request", sizeof("fetchall-for-range-request")) == 0)
 					s->rp[m].type |= CACHE_FETCHALL_FOR_RANGE_REQUEST;
 				if (p6) p3 = p6+1;
 				else break;
@@ -967,7 +963,7 @@ static void get_cache_uri_pattern(connection *con, plugin_data *p, buffer *dst) 
 
 				/* append string from / to . */
 				if (p2) buffer_append_string_len(dst, p1, abs(p2-p1));
-				else buffer_append_string(dst, p1); 
+				else buffer_append_string(dst, p1);
 
 				/* append _+hash */
 				buffer_append_string_len(dst, CONST_STR_LEN("_"));
@@ -1017,7 +1013,7 @@ static void get_cache_filename(connection *con, plugin_data *p, buffer *b) {
 	/* get the local path */
 	get_cache_uri_pattern(con, p, b);
 
-	if (b->ptr[b->used-2] == '/') 
+	if (b->ptr[b->used-2] == '/')
 		buffer_append_string(b, DEFAULT_INDEX_FILENAME);
 }
 
@@ -1033,7 +1029,7 @@ static int save_chunkqueue(int fd, chunkqueue *cq) {
 
 	for (c=cq->first, k = 0; c; c = c->next, k ++) ;
 
-	if (k == 0) return 0; 
+	if (k == 0) return 0;
 
 	save_offset = (off_t *) calloc(sizeof(off_t), k);
 
@@ -1058,8 +1054,8 @@ static int save_chunkqueue(int fd, chunkqueue *cq) {
 			
 			/* we can't send more then SSIZE_MAX bytes in one chunk */
 			
-			/* build writev list 
-			 * 
+			/* build writev list
+			 *
 			 * 1. limit: num_chunks < UIO_MAXIOV
 			 * 2. limit: num_bytes < SSIZE_MAX
 			 */
@@ -1083,7 +1079,7 @@ static int save_chunkqueue(int fd, chunkqueue *cq) {
 					} else {
 						chunks[i].iov_len = toSend;
 					}
-				 
+				
 					num_bytes += toSend;
 				}
 			}
@@ -1136,7 +1132,7 @@ static int save_chunkqueue(int fd, chunkqueue *cq) {
 			
 			break;
 		}
-		case FILE_CHUNK: 
+		case FILE_CHUNK:
 			/* we don't local cache FILE_CHUNK */
 			result = -1;
 			goto restore_offset;
@@ -1155,7 +1151,7 @@ static int save_chunkqueue(int fd, chunkqueue *cq) {
 		}
 	}
 restore_offset:
-	for (c=cq->first, k = 0; c; c = c->next, k++) 
+	for (c=cq->first, k = 0; c; c = c->next, k++)
 		c->offset = save_offset[k];
 
 	free(save_offset);
@@ -1207,7 +1203,7 @@ static int check_response_iscachable(server *srv, connection *con, plugin_data *
 #endif
 		 ) {
 		if (p->conf.support_accept_encoding == 0 ) {
-			if (p->conf.debug) 
+			if (p->conf.debug)
 				log_error_write(srv, __FILE__, __LINE__, "sb", "ignore response uri with CE", con->uri.path);
 			return 0;
 		} else {
@@ -1215,7 +1211,7 @@ static int check_response_iscachable(server *srv, connection *con, plugin_data *
 				hctx->content_encoding_type = 1;
 			} else if (strcasecmp(ds->value->ptr, "deflate") == 0) {
 				hctx->content_encoding_type = 2;
-			} 
+			}
 		}
 	}
 
@@ -1237,7 +1233,7 @@ static int check_response_iscachable(server *srv, connection *con, plugin_data *
 		(NULL != (ds = (data_string *)array_get_element(con->response.headers, CONST_STR_LEN("Vary"))))
 #endif
 		) {
-		if (p->conf.debug) 
+		if (p->conf.debug)
 			log_error_write(srv, __FILE__, __LINE__, "sbb", "ignore response with Vary:", ds->value, con->uri.path);
 		return 0;
 	}
@@ -1251,7 +1247,7 @@ static int check_response_iscachable(server *srv, connection *con, plugin_data *
 			NULL != (ds = (data_string *)array_get_element(con->response.headers, CONST_STR_LEN("Pragma"))) &&
 #endif
 			buffer_is_equal_string(ds->value, CONST_STR_LEN("no-cache"))) {
-			if (p->conf.debug) 
+			if (p->conf.debug)
 				log_error_write(srv, __FILE__, __LINE__, "sb", "ignore response uri with Pragma: no-cache ", con->uri.path);
 			return 0;
 		}
@@ -1265,7 +1261,7 @@ static int check_response_iscachable(server *srv, connection *con, plugin_data *
 			(buffer_is_equal_string(ds->value, CONST_STR_LEN("private")) ||
 			 buffer_is_equal_string(ds->value, CONST_STR_LEN("no-cache, must-revalidate")) ||
 			 buffer_is_equal_string(ds->value, CONST_STR_LEN("no-cache")))) {
-			if (p->conf.debug) 
+			if (p->conf.debug)
 				log_error_write(srv, __FILE__, __LINE__, "sb", "ignore response uri with Cache-Control: private/no-cache ", con->uri.path);
 			return 0;
 		}
@@ -1280,8 +1276,8 @@ static int check_response_iscachable(server *srv, connection *con, plugin_data *
 		) {
 		if (strptime(ds->value->ptr, "%a, %d %b %Y %H:%M:%S GMT", &etime)) {
 			etime_t = timegm(&etime);
-			if (etime_t <= srv->cur_ts) { 
-				if (p->conf.debug) 
+			if (etime_t <= srv->cur_ts) {
+				if (p->conf.debug)
 					log_error_write(srv, __FILE__, __LINE__, "sb",
 							"ignore response uri that Expires is sometime before now: ", con->uri.path);
 				return 0;
@@ -1290,7 +1286,7 @@ static int check_response_iscachable(server *srv, connection *con, plugin_data *
 	}
 
 	if ((con->request.http_version == HTTP_VERSION_1_1) &&
-			(con->response.content_length < 0) && 
+			(con->response.content_length < 0) &&
 		!(con->response.transfer_encoding & HTTP_TRANSFER_ENCODING_CHUNKED)) {
 		/* don't cache no 'Content-Length' and no "chunked-encoding" HTTP/1.1 response */
 		log_error_write(srv, __FILE__, __LINE__, "sb", "ignore no content-length and no chunked transfer-encoding uri", con->uri.path);
@@ -1423,13 +1419,13 @@ static void update_header_cache_file(connection *con, server *srv, handler_ctx *
 	/* going to update struct header_cache and asis file */
 	headers = array_init();
 	for (i = 0; i < con->response.headers->used; i++) {
-		/* skip 
+		/* skip
 		 * Date Content-Length Last-Modified
-		 * X-Cache Transfer-Encoding Expires 
+		 * X-Cache Transfer-Encoding Expires
 		 * Connection Server for all content
 		 * Cache-Control Age Via
 		 * Content-Encoding Vary
-		 * headers 
+		 * headers
 		 */
 		ds = (data_string *)con->response.headers->data[i];
 		copy_header = 1;
@@ -1504,7 +1500,7 @@ static void delete_header_cache_file(handler_ctx *hctx) {
 }
 
 /* check cache header or local cache header file.
- * return 0 when there has cache header 
+ * return 0 when there has cache header
  */
 static int check_header_cache_existness(server *srv, connection *con, handler_ctx *hctx) {
 	buffer *b;
@@ -1625,7 +1621,7 @@ handler_t mod_cache_uri_handler(server *srv, connection *con, void *p_d) {
 	hctx->is_query = is_query;
 
 	if (con->request.http_method == HTTP_METHOD_PURGE) {
-		/* handle PURGE command 
+		/* handle PURGE command
 		 * PURGE http://www.xxx.com/abc HTTP/1.0
 		 * or PURGE /abc HTTP/1.1\r\nHOST: www.xxx.com\r\n\r\n
 		 */
@@ -1634,9 +1630,9 @@ handler_t mod_cache_uri_handler(server *srv, connection *con, void *p_d) {
 
 		/* hardcoded 10.0.0.0/8 and 127.0.0.1/32 allow host */
 		if (strncmp(remote_ip, "10.", 3) == 0 || strcmp(remote_ip, "127.0.0.1")
-		   || (p->conf.purgehost_regex && 
+		   || (p->conf.purgehost_regex &&
 			   pcre_exec(p->conf.purgehost_regex, NULL, remote_ip, strlen(remote_ip), 0, 0, ovec, 3 * N) > 0)
-		   ) { 
+		   ) {
 			get_cache_filename(con, p, hctx->file);
 			if (unlink(hctx->file->ptr) == 0) con->http_status = 200;
 			else if (errno == ENOENT) con->http_status = 404;
@@ -1663,7 +1659,7 @@ handler_t mod_cache_uri_handler(server *srv, connection *con, void *p_d) {
 		}
 
 		for( i = 0; i < p->conf.domains_size; i ++) {
-			if ((n = pcre_exec(p->conf.domains_regex[i], NULL, 
+			if ((n = pcre_exec(p->conf.domains_regex[i], NULL,
 					con->uri.authority->ptr, con->uri.authority->used - 1, 0, 0, ovec, 3 * N)) < 0) {
 				if (n != PCRE_ERROR_NOMATCH) {
 					log_error_write(srv, __FILE__, __LINE__, "sbd",
@@ -1709,14 +1705,14 @@ handler_t mod_cache_uri_handler(server *srv, connection *con, void *p_d) {
 				}
 
 				if (type & CACHE_FLV_STREAMING) {
-					/* backend use flv streaming technology 
+					/* backend use flv streaming technology
 					 * don't save backend's flv streaming output
 					 */
-					if (is_query) 
+					if (is_query)
 						hctx->flv_streaming = 1;
 				}
 
-				if (type & CACHE_FETCHALL_FOR_RANGE_REQUEST) 
+				if (type & CACHE_FETCHALL_FOR_RANGE_REQUEST)
 					fetchall_for_range_request = 1;
 
 				if (type & CACHE_NO_EXPIRE_HEADER) {
@@ -1736,20 +1732,20 @@ handler_t mod_cache_uri_handler(server *srv, connection *con, void *p_d) {
 					if (
 #ifdef LIGHTTPD_V14
 						(NULL != (ds = (data_string *)array_get_element(con->request.headers, "Pragma")) &&
-						 buffer_is_equal_string(ds->value, CONST_STR_LEN("no-cache"))) 
+						 buffer_is_equal_string(ds->value, CONST_STR_LEN("no-cache")))
 							||
 						(NULL != (ds = (data_string *)array_get_element(con->request.headers, "Cache-Control")) &&
-						 buffer_is_equal_string(ds->value, CONST_STR_LEN("no-cache"))) 
+						 buffer_is_equal_string(ds->value, CONST_STR_LEN("no-cache")))
 #else
 						(NULL != (ds = (data_string *)array_get_element(con->request.headers, CONST_STR_LEN("Pragma"))) &&
-						 buffer_is_equal_string(ds->value, CONST_STR_LEN("no-cache"))) 
+						 buffer_is_equal_string(ds->value, CONST_STR_LEN("no-cache")))
 							||
 						(NULL != (ds = (data_string *)array_get_element(con->request.headers, CONST_STR_LEN("Cache-Control"))) &&
-						 buffer_is_equal_string(ds->value, CONST_STR_LEN("no-cache"))) 
+						 buffer_is_equal_string(ds->value, CONST_STR_LEN("no-cache")))
 #endif
-					) { 
+					) {
 						/* when user press F5:
-						 * IE send: 
+						 * IE send:
 						 * 	If-Modified-Since: Sun, 21 Nov 2004 14:35:21 GMT
 						 * 	If-None-Match: "14f598-916-a64a7c40"
 						 * Firefox send:
@@ -1763,7 +1759,7 @@ handler_t mod_cache_uri_handler(server *srv, connection *con, void *p_d) {
 						 */
 						con->use_cache_file = 0;
 					}
-				} 
+				}
 				break;
 			}
 		}
@@ -1810,7 +1806,7 @@ handler_t mod_cache_uri_handler(server *srv, connection *con, void *p_d) {
 			hctx->local_hit = 1;
 			hctx->file_mtime = sce->st.st_mtime;
 			if (!S_ISREG(sce->st.st_mode)) {
-				if (p->conf.debug) 
+				if (p->conf.debug)
 					log_error_write(srv, __FILE__, __LINE__, "bs", hctx->file, "isn't regular cache file:");
 				con->use_cache_file = 0;
 			} else if (expires > 0 && (srv->cur_ts - sce->st.st_ctime) > expires) {
@@ -1844,9 +1840,9 @@ handler_t mod_cache_uri_handler(server *srv, connection *con, void *p_d) {
 		return HANDLER_GO_ON;
 	}
 
-	if ( fetchall_for_range_request && (con->use_cache_file == 0) && 
+	if ( fetchall_for_range_request && (con->use_cache_file == 0) &&
 #ifdef LIGHTTPD_V14
-		(NULL != array_get_element(con->request.headers, "Range")) 
+		(NULL != array_get_element(con->request.headers, "Range"))
 #else
 		(NULL != array_get_element(con->request.headers, CONST_STR_LEN("Range")))
 #endif
@@ -1889,7 +1885,7 @@ handler_t mod_cache_docroot_handler(server *srv, connection *con, void *p_d) {
 
 	if (p->conf.enable == 0 || p->conf.cache_bases->used == 0 || hctx == NULL) return HANDLER_GO_ON;
 
-	/* we only handle GET and HEAD 
+	/* we only handle GET and HEAD
 	 * PURGE already handled by uri_handler
 	 */
 	switch(con->request.http_method) {
@@ -1920,7 +1916,7 @@ handler_t mod_cache_docroot_handler(server *srv, connection *con, void *p_d) {
 		buffer_append_string_buffer(con->physical.rel_path, b);
 		buffer_free(b);
 		/* append DEFAULT_INDEXFILENAME if needed */
-		if (con->physical.rel_path->used >= 2 && con->physical.rel_path->ptr[con->physical.rel_path->used-2] == '/') 
+		if (con->physical.rel_path->used >= 2 && con->physical.rel_path->ptr[con->physical.rel_path->used-2] == '/')
 			buffer_append_string(con->physical.rel_path, DEFAULT_INDEX_FILENAME);
 
 		if (hctx->accepted_encoding_type == 1) /* append ".gzip" */
@@ -1956,7 +1952,7 @@ handler_t mod_cache_handle_response_start(server *srv, connection *con, void *p_
 	if (con->use_cache_file) {
 		if (con->http_status == 200 || con->http_status == 304 ||
 			con->http_status == 206) {
-			update_response_header(srv, con, hctx); 
+			update_response_header(srv, con, hctx);
 			/* add "X-Cache" header */
 #ifdef LIGHTTPD_V14
 			if (NULL == array_get_element(con->response.headers, "X-Cache")) {
@@ -1981,7 +1977,7 @@ handler_t mod_cache_handle_response_start(server *srv, connection *con, void *p_
 #else
 				if (NULL == array_get_element(con->response.headers, CONST_STR_LEN("Content-Encoding"))) {
 #endif
-					if (hctx->accepted_encoding_type == 1) 
+					if (hctx->accepted_encoding_type == 1)
 						response_header_insert(srv, con, CONST_STR_LEN("Content-Encoding"), CONST_STR_LEN("gzip"));
 					else
 						response_header_insert(srv, con, CONST_STR_LEN("Content-Encoding"), CONST_STR_LEN("deflate"));
@@ -2062,14 +2058,14 @@ handler_t mod_cache_handle_response_start(server *srv, connection *con, void *p_
 		file = hctx->file;
 
 	/* create directory if needed */
-	if (HANDLER_ERROR != stat_cache_get_entry(srv, con, file, &sce)) { 
+	if (HANDLER_ERROR != stat_cache_get_entry(srv, con, file, &sce)) {
  		/* file exists */
 		if (0 == check_header_cache_existness(srv, con, hctx) && hctx->mtime && (hctx->mtime <= sce->st.st_mtime)) {
-			/* 
+			/*
 			 * update local copy's change time only
 			 */
 			update_cache_change_time(file->ptr, sce->st.st_mtime, srv->cur_ts);
-			if (p->conf.debug) 
+			if (p->conf.debug)
 				log_error_write(srv, __FILE__, __LINE__, "sb", "backend return 200 to update last-access time of ", file);
 
 			if (hctx->remove_cache_save) {
@@ -2080,7 +2076,7 @@ handler_t mod_cache_handle_response_start(server *srv, connection *con, void *p_
 			return HANDLER_GO_ON;
 		} else {
 			if (unlink(file->ptr) && errno != ENOENT) {
-				log_error_write(srv, __FILE__, __LINE__, "sbss", "failed to delete old cache file", 
+				log_error_write(srv, __FILE__, __LINE__, "sbss", "failed to delete old cache file",
 						hctx->file, "before update", strerror(errno));
 				if (hctx->remove_cache_save) {
 					cache_save = splaytree_delete(cache_save, hctx->hash);
@@ -2088,7 +2084,7 @@ handler_t mod_cache_handle_response_start(server *srv, connection *con, void *p_
 				}
 
 				return HANDLER_GO_ON;
-			} 
+			}
 			if (p->conf.debug)
 				log_error_write(srv, __FILE__, __LINE__, "sbs", "delete old cache file", file, "before update");
 		}
@@ -2102,9 +2098,9 @@ handler_t mod_cache_handle_response_start(server *srv, connection *con, void *p_
 	if (-1 == (hctx->fd = open(hctx->tmpfile->ptr, O_WRONLY|O_EXCL|O_CREAT|O_BINARY, 0644))) {
 		/* make sure directory existed */
 		if (errno == ENOTDIR || errno == ENOENT) {
-			if (mkdir_recursive(hctx->tmpfile->ptr, hctx->offset)) 
+			if (mkdir_recursive(hctx->tmpfile->ptr, hctx->offset))
 				return HANDLER_GO_ON;
-			if (-1 == (hctx->fd = open(hctx->tmpfile->ptr, O_WRONLY|O_EXCL|O_CREAT|O_BINARY, 0644))) 
+			if (-1 == (hctx->fd = open(hctx->tmpfile->ptr, O_WRONLY|O_EXCL|O_CREAT|O_BINARY, 0644)))
 				return HANDLER_GO_ON;
 		} else return HANDLER_GO_ON;
 	}
@@ -2124,7 +2120,7 @@ handler_t mod_cache_handle_response_filter(server *srv, connection *con, void *p
 #else
 		if (save_chunkqueue(hctx->fd, con->send) < 0) {
 #endif
-			log_error_write(srv, __FILE__, __LINE__, "sbss", "failed to save cache file ", 
+			log_error_write(srv, __FILE__, __LINE__, "sbss", "failed to save cache file ",
 					hctx->file, ":", strerror(errno));
 			hctx->error = errno;
 		}
@@ -2154,7 +2150,7 @@ handler_t mod_cache_cleanup(server *srv, connection *con, void *p_d) {
 			if (hctx->error == 0 && con->state != CON_STATE_ERROR &&
 				((len == con->response.content_length) || con->response.content_length == -1)) {
 				if (rename(hctx->tmpfile->ptr, hctx->file->ptr)) {
-					log_error_write(srv, __FILE__, __LINE__, "sbsbs", 
+					log_error_write(srv, __FILE__, __LINE__, "sbsbs",
 							"fail to rename", hctx->tmpfile, "to", hctx->file, strerror(errno));
 					unlink(hctx->tmpfile->ptr);
 					buffer_append_string(hctx->file, ASISEXT);
@@ -2167,12 +2163,12 @@ handler_t mod_cache_cleanup(server *srv, connection *con, void *p_d) {
 			} else {
 				unlink(hctx->tmpfile->ptr);
 				if (hctx->error)
-					log_error_write(srv, __FILE__, __LINE__, "sbs", 
+					log_error_write(srv, __FILE__, __LINE__, "sbs",
 							"sth is wrong while saving cache file, delete temporary file", hctx->tmpfile, strerror(hctx->error));
 				else
-					if(p->conf.debug) 
+					if(p->conf.debug)
 						log_error_write(srv, __FILE__, __LINE__, "sb",
-								"user or backend server terminates connection before finish, delete temporary file", 
+								"user or backend server terminates connection before finish, delete temporary file",
 								hctx->tmpfile);
 				buffer_append_string(hctx->file, ASISEXT);
 				unlink(hctx->file->ptr);
