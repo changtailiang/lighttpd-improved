@@ -99,6 +99,7 @@ SUCH DAMAGE.
 #define CONFIG_CACHE_PROGRAMS_EXT "cache.programs-ext"
 #define CONFIG_CACHE_SUPPORT_ACCEPT_ENCODING "cache.support-accept-encoding"
 #define CONFIG_CACHE_MAX_MEMORY_SIZE "cache.max-memory-size"
+#define CONFIG_CACHE_LRU_REMOVE_COUNT "cache.lru-remove-count"
 
 #ifndef HAVE_PCRE_H
 #error hmm, please install pcre-devel package
@@ -164,6 +165,7 @@ typedef struct
 	array *programs_ext;
 
 	uint32_t max_memory_size;
+	int lru_remove_count;
 } plugin_config;
 
 /* use in refresh_pattern_type */
@@ -857,6 +859,7 @@ SETDEFAULTS_FUNC(mod_cache_set_defaults)
 		{ CONFIG_CACHE_PROGRAMS_EXT, NULL, T_CONFIG_ARRAY, T_CONFIG_SCOPE_CONNECTION }, /* 9 */
 		{ CONFIG_CACHE_SUPPORT_ACCEPT_ENCODING, NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION }, /* 10 */
 		{ CONFIG_CACHE_MAX_MEMORY_SIZE, NULL, T_CONFIG_SHORT, T_CONFIG_SCOPE_CONNECTION }, /* 11 */
+		{ CONFIG_CACHE_LRU_REMOVE_COUNT, NULL, T_CONFIG_SHORT, T_CONFIG_SCOPE_CONNECTION }, /* 12 */
 		{ NULL, NULL, T_CONFIG_UNSET, T_CONFIG_SCOPE_UNSET }
 	};
 	
@@ -893,6 +896,7 @@ SETDEFAULTS_FUNC(mod_cache_set_defaults)
 		s->dynamic_mode = 0;
 		s->support_accept_encoding = 0;
 		s->max_memory_size = 256; /* default is 256M */
+		s->lru_remove_count = 256; /* default is 256 */
 
 		cv[0].destination = &(s->support_queries);
 		cv[1].destination = &(s->enable);
@@ -906,6 +910,7 @@ SETDEFAULTS_FUNC(mod_cache_set_defaults)
 		cv[9].destination = s->programs_ext;
 		cv[10].destination = &(s->support_accept_encoding);
 		cv[11].destination = &(s->max_memory_size);
+		cv[12].destination = &(s->lru_remove_count);
 
 		p->config_storage[i] = s;
 		ca = ((data_config *)srv->config_context->data[i])->value;
@@ -916,6 +921,8 @@ SETDEFAULTS_FUNC(mod_cache_set_defaults)
 
 		if (s->max_memory_size <= 0) s->max_memory_size = 256;
 		s->max_memory_size *= 1024*1024;
+
+		if (s->lru_remove_count <= 0) s->lru_remove_count = 256;
 
 		if (s->domains->used) {
 			/* parse domains */
@@ -1056,6 +1063,7 @@ mod_cache_patch_connection(server *srv, connection *con, plugin_data *p)
 	PATCH_OPTION(programs_ext);
 	PATCH_OPTION(support_accept_encoding);
 	PATCH_OPTION(max_memory_size);
+	PATCH_OPTION(lru_remove_count);
 	
 	/* skip the first, the global context */
 	for (i = 1; i < srv->config_context->used; i++) {
@@ -1093,6 +1101,8 @@ mod_cache_patch_connection(server *srv, connection *con, plugin_data *p)
 				PATCH_OPTION(support_accept_encoding);
 			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN(CONFIG_CACHE_MAX_MEMORY_SIZE))) {
 				PATCH_OPTION(max_memory_size);
+			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN(CONFIG_CACHE_LRU_REMOVE_COUNT))) {
+				PATCH_OPTION(lru_remove_count);
 			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN(CONFIG_CACHE_PROGRAMS_EXT))) {
 				PATCH_OPTION(programs_ext);
 			}
@@ -2249,7 +2259,7 @@ mod_cache_handle_memory_storage(server *srv, connection *con, void *p_d)
 		log_error_write(srv, __FILE__, __LINE__, "s", "-- mod_cache_handle_memory_storage called");
 
 	if (used_memory_size > p->conf.max_memory_size)
-		free_memory_cache_by_lru(srv, 100);
+		free_memory_cache_by_lru(srv, p->conf.lru_remove_count);
 
 	mc = get_memory_cache(hctx);
 	if (mc && mc->inuse && mc->content != NULL) {
