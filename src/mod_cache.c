@@ -543,7 +543,7 @@ free_memory_cache_chain(struct memory_cache *p)
 #ifndef LIGHTTPD_V14
 data_integer *cache_memory;
 data_integer *cache_memory_items;
-data_integer *cache_items;
+data_integer *cache_local_items;
 data_integer *cache_hit_percent;
 #endif
 
@@ -554,7 +554,7 @@ INIT_FUNC(mod_cache_init)
 	plugin_data *p;
 	
 #ifndef LIGHTTPD_V14
-	cache_items = status_counter_get_counter(CONST_STR_LEN(CACHE_LOCAL_ITEMS));
+	cache_local_items = status_counter_get_counter(CONST_STR_LEN(CACHE_LOCAL_ITEMS));
 	cache_memory = status_counter_get_counter(CONST_STR_LEN(CACHE_MEMORY));
 	cache_memory_items = status_counter_get_counter(CONST_STR_LEN(CACHE_MEMORY_ITEMS));
 	cache_hit_percent = status_counter_get_counter(CONST_STR_LEN(CACHE_HIT_PERCENT));	
@@ -2567,6 +2567,13 @@ mod_cache_cleanup(server *srv, connection *con, void *p_d)
 					buffer_append_string(hctx->file, ASISEXT);
 					unlink(hctx->file->ptr);
 				} else {
+#ifdef LIGHTTPD_V14
+					status_counter_set(srv, CONST_STR_LEN(CACHE_MEMORY), used_memory_size >> 20);
+					status_counter_set(srv, CONST_STR_LEN(CACHE_LOCAL_ITEMS), local_cache_number);
+#else
+					COUNTER_SET(cache_memory, used_memory_size >> 20);
+					COUNTER_SET(cache_local_items, local_cache_number);
+#endif
 					update_cache_change_time(hctx->file->ptr, hctx->mtime, srv->cur_ts);
 					if (p->conf.debug)
 						log_error_write(srv, __FILE__, __LINE__, "sb", "cache file saved successfully:", hctx->file);
