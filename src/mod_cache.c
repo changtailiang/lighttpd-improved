@@ -97,7 +97,6 @@ SUCH DAMAGE.
 #define CONFIG_CACHE_IGNORE_HOSTNAME "cache.ignore-hostname"
 #define CONFIG_CACHE_DYNAMIC_MODE "cache.dynamic-mode"
 #define CONFIG_CACHE_PROGRAMS_EXT "cache.programs-ext"
-#define CONFIG_CACHE_SUPPORT_ACCEPT_ENCODING "cache.support-accept-encoding"
 #define CONFIG_CACHE_MAX_MEMORY_SIZE "cache.max-memory-size"
 #define CONFIG_CACHE_LRU_REMOVE_COUNT "cache.lru-remove-count"
 
@@ -159,7 +158,6 @@ typedef struct
 	unsigned short enable;
 	unsigned short debug;
 	unsigned short ignore_hostname; /* default to disable */
-	unsigned short support_accept_encoding;
 
 	unsigned short dynamic_mode;
 	array *programs_ext;
@@ -178,6 +176,7 @@ typedef struct
 #define CACHE_IGNORE_CACHE_CONTROL_HEADER BV(6)
 #define CACHE_FLV_STREAMING BV(7)
 #define CACHE_USE_MEMORY BV(8)
+#define CACHE_ACCEPT_ENCODING BV(9)
 
 #define ASISEXT	".cachehd"
 
@@ -250,6 +249,8 @@ typedef struct
 	unsigned int remove_cache_save:1;
 	/* flag of whether to put into memory */
 	unsigned int use_memory:1;
+	/* flag of whether to put into memory */
+	unsigned int support_accept_encoding:1;
 
 	/* response's LM timestamp */
 	time_t mtime;
@@ -857,9 +858,8 @@ SETDEFAULTS_FUNC(mod_cache_set_defaults)
 		{ CONFIG_CACHE_IGNORE_HOSTNAME, NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION }, /* 7 */
 		{ CONFIG_CACHE_DYNAMIC_MODE, NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION }, /* 8 */
 		{ CONFIG_CACHE_PROGRAMS_EXT, NULL, T_CONFIG_ARRAY, T_CONFIG_SCOPE_CONNECTION }, /* 9 */
-		{ CONFIG_CACHE_SUPPORT_ACCEPT_ENCODING, NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION }, /* 10 */
-		{ CONFIG_CACHE_MAX_MEMORY_SIZE, NULL, T_CONFIG_SHORT, T_CONFIG_SCOPE_CONNECTION }, /* 11 */
-		{ CONFIG_CACHE_LRU_REMOVE_COUNT, NULL, T_CONFIG_SHORT, T_CONFIG_SCOPE_CONNECTION }, /* 12 */
+		{ CONFIG_CACHE_MAX_MEMORY_SIZE, NULL, T_CONFIG_SHORT, T_CONFIG_SCOPE_CONNECTION }, /* 10 */
+		{ CONFIG_CACHE_LRU_REMOVE_COUNT, NULL, T_CONFIG_SHORT, T_CONFIG_SCOPE_CONNECTION }, /* 11 */
 		{ NULL, NULL, T_CONFIG_UNSET, T_CONFIG_SCOPE_UNSET }
 	};
 	
@@ -894,7 +894,6 @@ SETDEFAULTS_FUNC(mod_cache_set_defaults)
 		s->purgehost_regex = NULL;
 		s->programs_ext = array_init();
 		s->dynamic_mode = 0;
-		s->support_accept_encoding = 0;
 		s->max_memory_size = 256; /* default is 256M */
 		s->lru_remove_count = 256; /* default is 256 */
 
@@ -908,9 +907,8 @@ SETDEFAULTS_FUNC(mod_cache_set_defaults)
 		cv[7].destination = &(s->ignore_hostname);
 		cv[8].destination = &(s->dynamic_mode);
 		cv[9].destination = s->programs_ext;
-		cv[10].destination = &(s->support_accept_encoding);
-		cv[11].destination = &(s->max_memory_size);
-		cv[12].destination = &(s->lru_remove_count);
+		cv[10].destination = &(s->max_memory_size);
+		cv[11].destination = &(s->lru_remove_count);
 
 		p->config_storage[i] = s;
 		ca = ((data_config *)srv->config_context->data[i])->value;
@@ -1021,6 +1019,8 @@ SETDEFAULTS_FUNC(mod_cache_set_defaults)
 					s->rp[m].type |= CACHE_FLV_STREAMING;
 				else if (strncmp(p3, "use-memory", sizeof("use-memory")) == 0)
 					s->rp[m].type |= CACHE_USE_MEMORY;
+				else if (strncmp(p3, "accept-encoding", sizeof("accept-encoding")) == 0)
+					s->rp[m].type |= CACHE_ACCEPT_ENCODING;
 				else if (strncmp(p3, "ignore-cache-control-header", sizeof("ignore-cache-control-header")) == 0)
 					s->rp[m].type |= CACHE_IGNORE_CACHE_CONTROL_HEADER;
 				else if (strncmp(p3, "nocache",  sizeof("nocache")) == 0 || strncmp(p3, "no-cache", sizeof("no-cache")) == 0)
@@ -1061,7 +1061,6 @@ mod_cache_patch_connection(server *srv, connection *con, plugin_data *p)
 	PATCH_OPTION(purgehost_regex);
 	PATCH_OPTION(dynamic_mode);
 	PATCH_OPTION(programs_ext);
-	PATCH_OPTION(support_accept_encoding);
 	PATCH_OPTION(max_memory_size);
 	PATCH_OPTION(lru_remove_count);
 	
@@ -1097,8 +1096,6 @@ mod_cache_patch_connection(server *srv, connection *con, plugin_data *p)
 				PATCH_OPTION(purgehost_regex);
 			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN(CONFIG_CACHE_DYNAMIC_MODE))) {
 				PATCH_OPTION(dynamic_mode);
-			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN(CONFIG_CACHE_SUPPORT_ACCEPT_ENCODING))) {
-				PATCH_OPTION(support_accept_encoding);
 			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN(CONFIG_CACHE_MAX_MEMORY_SIZE))) {
 				PATCH_OPTION(max_memory_size);
 			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN(CONFIG_CACHE_LRU_REMOVE_COUNT))) {
@@ -1454,7 +1451,7 @@ check_response_iscachable(server *srv, connection *con, plugin_data *p, handler_
 		(NULL != (ds = (data_string *)array_get_element(con->response.headers, CONST_STR_LEN("Content-Encoding"))))
 #endif
 		 ) {
-		if (p->conf.support_accept_encoding == 0 ) {
+		if (hctx->support_accept_encoding == 0 ) {
 			if (p->conf.debug)
 				log_error_write(srv, __FILE__, __LINE__, "sb", "ignore response uri with CE", con->uri.path);
 			return 0;
@@ -1478,7 +1475,7 @@ check_response_iscachable(server *srv, connection *con, plugin_data *p, handler_
 		return 0;
 	}
 
-	if ((p->conf.support_accept_encoding == 0 || hctx->use_memory == 1) &&
+	if ((hctx->support_accept_encoding == 0 || hctx->use_memory == 1) &&
 #ifdef LIGHTTPD_V14
 		(NULL != (ds = (data_string *)array_get_element(con->response.headers, "Vary")))
 #else
@@ -1984,24 +1981,17 @@ mod_cache_uri_handler(server *srv, connection *con, void *p_d)
 						hctx->flv_streaming = 1;
 				}
 
-				if (type & CACHE_FETCHALL_FOR_RANGE_REQUEST)
-					fetchall_for_range_request = 1;
+				if (type & CACHE_FETCHALL_FOR_RANGE_REQUEST) fetchall_for_range_request = 1;
 
-				if (type & CACHE_NO_EXPIRE_HEADER) {
-					hctx->no_expire_header = 1;
-				}
+				if (type & CACHE_NO_EXPIRE_HEADER) hctx->no_expire_header = 1;
 
-				if (type & CACHE_OVERRIDE_EXPIRE) {
-					hctx->override_expire = 1;
-				}
+				if (type & CACHE_OVERRIDE_EXPIRE) hctx->override_expire = 1;
 
-				if (type & CACHE_USE_MEMORY) {
-					hctx->use_memory = 1;
-				}
+				if (type & CACHE_USE_MEMORY) hctx->use_memory = 1;
 
-				if (type & CACHE_IGNORE_CACHE_CONTROL_HEADER) {
-					hctx->ignore_cache_control_header = 1;
-				}
+				if (type & CACHE_ACCEPT_ENCODING) hctx->support_accept_encoding = 1;
+
+				if (type & CACHE_IGNORE_CACHE_CONTROL_HEADER) hctx->ignore_cache_control_header = 1;
 
 				if (type & CACHE_UPDATE_ON_REFRESH) {
 					/* check request header */
@@ -2047,7 +2037,7 @@ mod_cache_uri_handler(server *srv, connection *con, void *p_d)
 		get_cache_filename(con, p, hctx->file);
 		if (con->use_cache_file) {
 			/* check local cache file existence */
-			if (p->conf.support_accept_encoding) {
+			if (hctx->support_accept_encoding) {
 				hctx->accepted_encoding_type = 0;
 				if (
 #ifdef LIGHTTPD_V14
@@ -2369,7 +2359,7 @@ mod_cache_handle_response_start(server *srv, connection *con, void *p_d)
 	/* only http status 200 now */
 	if (check_response_iscachable(srv, con, p, hctx) == 0) return HANDLER_GO_ON;
 
-	if (hctx->use_memory == 0 && p->conf.support_accept_encoding) {
+	if (hctx->use_memory == 0 && hctx->support_accept_encoding) {
 #ifdef LIGHTTPD_V14
 		if (NULL != (ds = (data_string *)array_get_element(con->response.headers, "Content-Encoding"))) {
 #else
