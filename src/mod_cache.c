@@ -190,7 +190,7 @@ struct memory_cache
 
 	char expires[sizeof("Sat, 23 Jul 2005 21:20:01 GMT")+2];
 	char max_age[20];
-	time_t expires_time;
+	time_t content_expire_ts;
 
 	/* content[0] -> normal
 	 * content[1] -> gzip
@@ -793,10 +793,10 @@ static void
 update_asis_expires_cache(struct memory_cache *cc, time_t exp, int timeout)
 {
 	if (cc == NULL || exp == 0) return;
-	if (cc->expires_time == exp) return;
+	if (cc->content_expire_ts == exp) return;
 	strftime(cc->expires, sizeof("Fri, 01 Jan 1990 00:00:00 GMT")+1,
 			"%a, %d %b %Y %H:%M:%S GMT", gmtime(&exp));
-	cc->expires_time = exp;
+	cc->content_expire_ts = exp;
 	if (timeout > 0) {
 		snprintf(cc->max_age, 19, "max-age=%d",timeout);
 	} else {
@@ -1803,7 +1803,7 @@ update_response_header(server *srv, connection *con, handler_ctx *hctx)
 	}
 
 	if (con->http_status == 200 && hctx->no_expire_header == 0) {
-		if (hctx->expires > 0 && (node->expires_time != hctx->expires))
+		if (hctx->expires > 0 && (node->content_expire_ts != hctx->expires))
 			update_asis_expires_cache(node, hctx->expires, hctx->timeout);
 		if (node->expires[0] != '\0')
 			response_header_overwrite(srv, con, CONST_STR_LEN("Expires"), node->expires, strlen(node->expires));
@@ -2106,7 +2106,7 @@ mod_cache_uri_handler(server *srv, connection *con, void *p_d)
 		/* use memory storage */
 		struct memory_cache *mc;
 		mc = get_memory_cache(hctx);
-		if (mc == NULL || mc->inuse == 0) {
+		if (mc == NULL || mc->inuse == 0 || ((expires > 0) && (srv->cur_ts > mc->content_expire_ts))) {
 			con->use_cache_file = 0;
 		} else {
 			switch(hctx->request_encoding_type) {
@@ -2600,8 +2600,8 @@ mod_cache_cleanup(server *srv, connection *con, void *p_d)
 					mc->content[i]->ref_count = 1; /* setup shared flag */
 					used_memory_size += mc->content[i]->size;
 					/* update memory items expire time */
-					if (hctx->expires > 0) mc->expires_time = hctx->expires;
-					else mc->expires_time = srv->cur_ts + 60; /* 1 minutes */
+					if (hctx->expires > 0) mc->content_expire_ts = hctx->expires;
+					else mc->content_expire_ts = srv->cur_ts + 60; /* 1 minutes */
 #ifdef LIGHTTPD_V14
 					status_counter_set(srv, CONST_STR_LEN(CACHE_MEMORY), used_memory_size >> 20);
 					status_counter_set(srv, CONST_STR_LEN(CACHE_MEMORY_ITEMS), memory_cache_number);
