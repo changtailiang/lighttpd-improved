@@ -177,7 +177,7 @@ typedef struct
 #define CACHE_IGNORE_CACHE_CONTROL_HEADER BV(6)
 #define CACHE_FLV_STREAMING BV(7)
 #define CACHE_USE_MEMORY BV(8)
-#define CACHE_ACCEPT_ENCODING BV(9)
+#define CACHE_SUPPORT_ACCEPT_ENCODING BV(9)
 #define CACHE_TRY_GZIP_DEFLATE_FIRST BV(10)
 
 #define ASISEXT	".cachehd"
@@ -1042,8 +1042,8 @@ SETDEFAULTS_FUNC(mod_cache_set_defaults)
 					s->rp[m].type |= CACHE_FLV_STREAMING;
 				else if (strncmp(p3, "use-memory", sizeof("use-memory")) == 0)
 					s->rp[m].type |= CACHE_USE_MEMORY;
-				else if (strncmp(p3, "use-accept-encoding", sizeof("use-accept-encoding")) == 0)
-					s->rp[m].type |= CACHE_ACCEPT_ENCODING;
+				else if (strncmp(p3, "support-accept-encoding", sizeof("support-accept-encoding")) == 0)
+					s->rp[m].type |= CACHE_SUPPORT_ACCEPT_ENCODING;
 				else if (strncmp(p3, "try-gzip-deflate-first", sizeof("try-gzip-deflate-first")) == 0)
 					s->rp[m].type |= CACHE_TRY_GZIP_DEFLATE_FIRST;
 				else if (strncmp(p3, "ignore-cache-control-header", sizeof("ignore-cache-control-header")) == 0)
@@ -1981,7 +1981,7 @@ mod_cache_uri_handler(server *srv, connection *con, void *p_d)
 				if (type & CACHE_NO_EXPIRE_HEADER) hctx->no_expire_header = 1;
 				if (type & CACHE_OVERRIDE_EXPIRE) hctx->override_expire = 1;
 				if (type & CACHE_USE_MEMORY) hctx->use_memory = 1;
-				if (type & CACHE_ACCEPT_ENCODING) hctx->use_accept_encoding = 1;
+				if (type & CACHE_SUPPORT_ACCEPT_ENCODING) hctx->use_accept_encoding = 1;
 				if (type & CACHE_TRY_GZIP_DEFLATE_FIRST) hctx->try_gzip_deflate_first = 1;
 				if (type & CACHE_IGNORE_CACHE_CONTROL_HEADER) hctx->ignore_cache_control_header = 1;
 
