@@ -192,6 +192,10 @@ struct memory_cache
 	char max_age[20];
 	time_t expires_time;
 
+	/* content[0] -> normal
+	 * content[1] -> gzip
+	 * content[2] -> deflate
+	 */
 	buffer *content[3];
 
 	struct memory_cache *next;
@@ -227,13 +231,16 @@ typedef struct
 	buffer *tmpfile;
 	buffer *gzipfile;
 
+	buffer *headerfile;
+
 	buffer *memoryid;
 	buffer *savecontent;
 
 	int fd; /* cache file fd */
 	unsigned short error;
-	unsigned short accepted_encoding_type; /* 1 -> gzip, 2 -> deflate */
 
+	/* accept-encoding related variables */
+	unsigned short accepted_encoding_type; /* 1 -> gzip, 2 -> deflate */
 	unsigned short request_encoding_type; /* 1 -> gzip, 2 -> deflate, 3 -> both */
 	unsigned short response_encoding_type; /* 1 -> gzip, 2 -> deflate */
 
@@ -253,9 +260,9 @@ typedef struct
 	unsigned int remove_cache_save:1;
 	/* flag of whether to put into memory */
 	unsigned int use_memory:1;
-	/* flag of whether to put into memory */
+
+	/* accept-encoding request */
 	unsigned int use_accept_encoding:1;
-	/* flag of whether to put into memory */
 	unsigned int try_gzip_deflate_first:1;
 
 	/* response's LM timestamp */
@@ -485,6 +492,7 @@ handler_ctx_init(void)
 	memset(hctx, 0, sizeof(*hctx));
 	hctx->file = buffer_init();
 	hctx->tmpfile = buffer_init();
+	hctx->headerfile = buffer_init();
 	hctx->gzipfile = buffer_init();
 	hctx->memoryid = buffer_init();
 	return hctx;
@@ -499,6 +507,7 @@ handler_ctx_free(handler_ctx *hctx)
 		buffer_free(hctx->gzipfile);
 		buffer_free(hctx->memoryid);
 		buffer_free(hctx->savecontent);
+		buffer_free(hctx->headerfile);
 		if (hctx->fd > 0) close(hctx->fd);
 		free(hctx);
 	}
@@ -1456,10 +1465,6 @@ check_response_iscachable(server *srv, connection *con, plugin_data *p, handler_
 
 	if (con->http_status != 200) return 0;
 
-	/* Check if response has a Content-Encoding.
-	 * Don't cache response with gzip/deflate content-encoding
-	 */
-
 	/* don't save response with 'Set-Cookie' */
 #ifdef LIGHTTPD_V14
 	if (NULL != (ds = (data_string *)array_get_element(con->response.headers, "Set-Cookie"))) {
@@ -1468,6 +1473,17 @@ check_response_iscachable(server *srv, connection *con, plugin_data *p, handler_
 #endif
 		if (p->conf.debug)
 			log_error_write(srv, __FILE__, __LINE__, "sbb", "ignore response with Set-Cookie:", ds->value, con->uri.path);
+		return 0;
+	}
+
+	/* don't cache Content-Range response, which is partial */
+#ifdef LIGHTTPD_V14
+	if (NULL != (ds = (data_string *)array_get_element(con->response.headers, "Content-Range"))) {
+#else
+	if (NULL != (ds = (data_string *)array_get_element(con->response.headers, CONST_STR_LEN("Content-Range")))) {
+#endif
+		if (p->conf.debug)
+			log_error_write(srv, __FILE__, __LINE__, "sb", "ignore partial response with Content-Range", con->uri.path);
 		return 0;
 	}
 
@@ -1735,22 +1751,6 @@ update_memory_cache_file(connection *con, handler_ctx *hctx)
 
 	update_memory_cache_headers(hctx, headers);
 	if (fd > 0) close(fd);
-	return;
-}
-
-static void
-delete_memory_cache_file(handler_ctx *hctx)
-{
-	/*delete header cache file*/
-	buffer *f;
-
-	if (hctx == NULL) return;
-	f = buffer_init();
-	buffer_copy_string_buffer(f, hctx->file);
-	buffer_append_string(f, ASISEXT);
-	unlink(f->ptr);
-
-	buffer_free(f);
 	return;
 }
 
@@ -2045,6 +2045,8 @@ mod_cache_uri_handler(server *srv, connection *con, void *p_d)
 
 	if (hctx->use_memory == 0) {
 		get_cache_filename(con, p, hctx->file);
+		buffer_copy_string_buffer(hctx->headerfile, hctx->file);
+		buffer_append_string_len(hctx->headerfile, CONST_STR_LEN(ASISEXT));
 		if (con->use_cache_file) {
 			/* check local cache file existence */
 			hctx->accepted_encoding_type = 0;
@@ -2381,7 +2383,8 @@ mod_cache_handle_response_start(server *srv, connection *con, void *p_d)
 			if (unlink(hctx->file->ptr) == 0 && p->conf.debug)
 				log_error_write(srv, __FILE__, __LINE__, "sb", "backend return 404 to delete cache file", hctx->file);
 
-			delete_memory_cache_file(hctx);
+			/* delete header file */
+			unlink(hctx->headerfile->ptr);
 		}
 		delete_memory_cache(srv, hctx);
 		return HANDLER_GO_ON;
