@@ -178,7 +178,7 @@ typedef struct
 #define CACHE_FLV_STREAMING BV(7)
 #define CACHE_USE_MEMORY BV(8)
 #define CACHE_SUPPORT_ACCEPT_ENCODING BV(9)
-#define CACHE_TRY_GZIP_DEFLATE_FIRST BV(10)
+#define CACHE_USE_GZIP_DEFLATE_ONLY BV(10)
 
 #define ASISEXT	".cachehd"
 
@@ -263,7 +263,7 @@ typedef struct
 
 	/* accept-encoding request */
 	unsigned int use_accept_encoding:1;
-	unsigned int try_gzip_deflate_first:1;
+	unsigned int use_gzip_deflate_only:1;
 
 	/* response's LM timestamp */
 	time_t mtime;
@@ -1044,8 +1044,8 @@ SETDEFAULTS_FUNC(mod_cache_set_defaults)
 					s->rp[m].type |= CACHE_USE_MEMORY;
 				else if (strncmp(p3, "support-accept-encoding", sizeof("support-accept-encoding")) == 0)
 					s->rp[m].type |= CACHE_SUPPORT_ACCEPT_ENCODING;
-				else if (strncmp(p3, "try-gzip-deflate-first", sizeof("try-gzip-deflate-first")) == 0)
-					s->rp[m].type |= CACHE_TRY_GZIP_DEFLATE_FIRST;
+				else if (strncmp(p3, "use-gzip-deflate-only", sizeof("use-gzip-deflate-only")) == 0)
+					s->rp[m].type |= CACHE_USE_GZIP_DEFLATE_ONLY;
 				else if (strncmp(p3, "ignore-cache-control-header", sizeof("ignore-cache-control-header")) == 0)
 					s->rp[m].type |= CACHE_IGNORE_CACHE_CONTROL_HEADER;
 				else if (strncmp(p3, "nocache",  sizeof("nocache")) == 0 || strncmp(p3, "no-cache", sizeof("no-cache")) == 0)
@@ -1982,7 +1982,7 @@ mod_cache_uri_handler(server *srv, connection *con, void *p_d)
 				if (type & CACHE_OVERRIDE_EXPIRE) hctx->override_expire = 1;
 				if (type & CACHE_USE_MEMORY) hctx->use_memory = 1;
 				if (type & CACHE_SUPPORT_ACCEPT_ENCODING) hctx->use_accept_encoding = 1;
-				if (type & CACHE_TRY_GZIP_DEFLATE_FIRST) hctx->try_gzip_deflate_first = 1;
+				if (type & CACHE_USE_GZIP_DEFLATE_ONLY) hctx->use_gzip_deflate_only = 1;
 				if (type & CACHE_IGNORE_CACHE_CONTROL_HEADER) hctx->ignore_cache_control_header = 1;
 
 				if (type & CACHE_UPDATE_ON_REFRESH) {
@@ -2112,21 +2112,21 @@ mod_cache_uri_handler(server *srv, connection *con, void *p_d)
 			switch(hctx->request_encoding_type) {
 				case 1:
 					if (mc->content[1] == NULL) {
-						if (hctx->try_gzip_deflate_first == 1 || mc->content[0] == NULL) {
+						if (hctx->use_gzip_deflate_only == 1 || mc->content[0] == NULL) {
 							con->use_cache_file = 0;
 						}
 					}
 					break;
 				case 2:
 					if (mc->content[2] == NULL) {
-						if (hctx->try_gzip_deflate_first == 1 || mc->content[0] == NULL) {
+						if (hctx->use_gzip_deflate_only == 1 || mc->content[0] == NULL) {
 							con->use_cache_file = 0;
 						}
 					}
 					break;
 				case 3:
 					if (mc->content[1] == NULL && mc->content[2] == NULL) {
-						if (hctx->try_gzip_deflate_first == 1 || mc->content[0] == NULL) {
+						if (hctx->use_gzip_deflate_only == 1 || mc->content[0] == NULL) {
 							con->use_cache_file = 0;
 						}
 					}
