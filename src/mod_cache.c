@@ -2462,6 +2462,8 @@ mod_cache_handle_response_start(server *srv, connection *con, void *p_d)
 
 	if (hctx->use_memory == 1) {
 		hctx->savecontent = buffer_init();
+		if (con->response.content_length > 0) /* pre-allocate content buffer */
+			buffer_prepare_copy(hctx->savecontent, con->response.content_length);
 		update_memory_cache_file(con, hctx);
 		return HANDLER_GO_ON;
 	}
@@ -2475,9 +2477,7 @@ mod_cache_handle_response_start(server *srv, connection *con, void *p_d)
 	if (HANDLER_ERROR != stat_cache_get_entry(srv, con, file, &sce)) {
  		/* file exists */
 		if (0 == check_memory_cache_existness(srv, con, hctx) && hctx->mtime && (hctx->mtime <= sce->st.st_mtime)) {
-			/*
-			 * update local copy's change time only
-			 */
+			/* update local copy's change time only */
 			update_cache_change_time(file->ptr, sce->st.st_mtime, srv->cur_ts);
 			if (p->conf.debug)
 				log_error_write(srv, __FILE__, __LINE__, "sb", "backend return 200 to update last-access time of ", file);

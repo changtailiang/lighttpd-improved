@@ -106,7 +106,7 @@ int buffer_prepare_append(buffer *b, size_t size) {
 		b->ptr = malloc(b->size);
 		b->used = 0;
 		assert(b->ptr);
-	} else if (b->used + size > b->size) {
+	} else if ((b->used + size) > b->size) {
 		b->size += size;
 
 		/* always allocate a multiply of BUFFER_PIECE_SIZE */
