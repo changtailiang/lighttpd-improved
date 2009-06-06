@@ -107,7 +107,7 @@ mod_trigger_b4_dl_la_LIBADD = $(GDBM_LIB) $(MEMCACHE_LIB) $(PCRE_LIB) $(common_l
 lib_LTLIBRARIES += mod_cache.la
 mod_cache_la_SOURCES = mod_cache.c
 mod_cache_la_LDFLAGS = -module -export-dynamic -avoid-version -no-undefined
-mod_cache_la_LIBADD = $(common_libadd)
+mod_cache_la_LIBADD = $(Z_LIB) $(common_libadd)
 
 lib_LTLIBRARIES += mod_mysql_vhost.la
 mod_mysql_vhost_la_SOURCES = mod_mysql_vhost.c

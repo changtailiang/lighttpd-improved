@@ -81,6 +81,12 @@ SUCH DAMAGE.
 #include "config.h"
 #endif
 
+#if defined HAVE_ZLIB_H && defined HAVE_LIBZ
+#define USE_ZLIB
+#include <zlib.h>
+#include "crc32.h"
+#endif
+
 #ifndef UIO_MAXIOV
 # ifdef __FreeBSD__
 /* FreeBSD 4.7, 4.9 defined it in sys/uio.h only if _KERNEL is specified */
@@ -177,8 +183,8 @@ typedef struct
 #define CACHE_IGNORE_CACHE_CONTROL_HEADER BV(6)
 #define CACHE_FLV_STREAMING BV(7)
 #define CACHE_USE_MEMORY BV(8)
-#define CACHE_SUPPORT_ACCEPT_ENCODING BV(9)
-#define CACHE_USE_GZIP_DEFLATE_ONLY BV(10)
+#define CACHE_IGNORE_VARY BV(11)
+#define CACHE_MEMORY_COMPRESS BV(12)
 
 #define ASISEXT	".cachehd"
 
@@ -192,11 +198,10 @@ struct memory_cache
 	char max_age[20];
 	time_t content_expire_ts;
 
-	/* content[0] -> normal
-	 * content[1] -> gzip
-	 * content[2] -> deflate
-	 */
-	buffer *content[3];
+	buffer *content;
+#ifdef USE_ZLIB
+	buffer *gzip_content;
+#endif
 
 	struct memory_cache *next;
 };
@@ -229,7 +234,6 @@ typedef struct
 {
 	buffer *file;
 	buffer *tmpfile;
-	buffer *gzipfile;
 
 	buffer *headerfile;
 
@@ -238,11 +242,6 @@ typedef struct
 
 	int fd; /* cache file fd */
 	unsigned short error;
-
-	/* accept-encoding related variables */
-	unsigned short accepted_encoding_type; /* 1 -> gzip, 2 -> deflate */
-	unsigned short request_encoding_type; /* 1 -> gzip, 2 -> deflate, 3 -> both */
-	unsigned short response_encoding_type; /* 1 -> gzip, 2 -> deflate */
 
 	unsigned int is_query:1;
 	unsigned int flv_streaming:1;
@@ -260,10 +259,13 @@ typedef struct
 	unsigned int remove_cache_save:1;
 	/* flag of whether to put into memory */
 	unsigned int use_memory:1;
+	/* ignore 'Vary' response header */
+	unsigned int ignore_vary:1;
 
-	/* accept-encoding request */
-	unsigned int use_accept_encoding:1;
-	unsigned int use_gzip_deflate_only:1;
+#ifdef USE_ZLIB
+	unsigned int memory_compress:1;
+	unsigned short request_encoding_type; /* 1 -> gzip, 2 -> deflate, 3 -> both */
+#endif
 
 	/* response's LM timestamp */
 	time_t mtime;
@@ -493,7 +495,6 @@ handler_ctx_init(void)
 	hctx->file = buffer_init();
 	hctx->tmpfile = buffer_init();
 	hctx->headerfile = buffer_init();
-	hctx->gzipfile = buffer_init();
 	hctx->memoryid = buffer_init();
 	return hctx;
 }
@@ -504,7 +505,6 @@ handler_ctx_free(handler_ctx *hctx)
 	if (hctx) {
 		buffer_free(hctx->file);
 		buffer_free(hctx->tmpfile);
-		buffer_free(hctx->gzipfile);
 		buffer_free(hctx->memoryid);
 		buffer_free(hctx->savecontent);
 		buffer_free(hctx->headerfile);
@@ -517,8 +517,6 @@ handler_ctx_free(handler_ctx *hctx)
 static void
 memory_cache_free(struct memory_cache *cache)
 {
-	int i;
-
 	if (cache == NULL) return;
 	if (cache->headers || cache->memoryid) {
 		local_cache_number --;
@@ -526,16 +524,25 @@ memory_cache_free(struct memory_cache *cache)
 	}
 	array_free(cache->headers);
 	buffer_free(cache->memoryid);
-	for (i = 0; i < 3; i ++) {
-		if (cache->content[i]) {
-			if (used_memory_size <= cache->content[i]->size)
-				used_memory_size = 0;
-			else
-				used_memory_size -= cache->content[i]->size;
-			cache->content[i]->ref_count --; // remove share buffer flag
-			buffer_free(cache->content[i]);
-		}
+	if (cache->content) {
+		if (used_memory_size <= cache->content->size)
+			used_memory_size = 0;
+		else
+			used_memory_size -= cache->content->size;
+		cache->content->ref_count --; // remove share buffer flag
+		buffer_free(cache->content);
 	}
+
+#ifdef USE_ZLIB
+	if (cache->gzip_content) {
+		if (used_memory_size <= cache->gzip_content->size)
+			used_memory_size = 0;
+		else
+			used_memory_size -= cache->gzip_content->size;
+		cache->gzip_content->ref_count --; // remove share buffer flag
+		buffer_free(cache->gzip_content);
+	}
+#endif
 
 	if (cache->inuse && memory_cache_number > 0)
 		memory_cache_number --;
@@ -809,7 +816,7 @@ update_asis_expires_cache(struct memory_cache *cc, time_t exp, int timeout)
 static int
 delete_memory_cache(server *srv, handler_ctx *hctx)
 {
-	unsigned int i, j;
+	unsigned int i;
 	struct memory_cache *c, *c1;
 
 	if (hctx == NULL) return 1;
@@ -838,16 +845,26 @@ delete_memory_cache(server *srv, handler_ctx *hctx)
 		local_cache_number --;
 	if (c->headers) array_free(c->headers);
 	if (c->memoryid) buffer_free(c->memoryid);
-	for (j = 0; j < 3 ; j ++) {
-		if (c->content[j]) {
-			if (used_memory_size <= c->content[j]->size)
-				used_memory_size = 0;
-			else
-				used_memory_size -= c->content[j]->size;
-			c->content[j]->ref_count --; // remove share buffer flag
-			buffer_free(c->content[j]);
-		}
+
+	if (c->content) {
+		if (used_memory_size <= c->content->size)
+			used_memory_size = 0;
+		else
+			used_memory_size -= c->content->size;
+		c->content->ref_count --; // remove share buffer flag
+		buffer_free(c->content);
 	}
+
+#ifdef USE_ZLIB
+	if (c->gzip_content) {
+		if (used_memory_size <= c->gzip_content->size)
+			used_memory_size = 0;
+		else
+			used_memory_size -= c->gzip_content->size;
+		c->gzip_content->ref_count --; // remove share buffer flag
+		buffer_free(c->gzip_content);
+	}
+#endif
 	if (c->inuse && memory_cache_number > 0)
 		memory_cache_number --;
 	free(c);
@@ -1042,10 +1059,10 @@ SETDEFAULTS_FUNC(mod_cache_set_defaults)
 					s->rp[m].type |= CACHE_FLV_STREAMING;
 				else if (strncmp(p3, "use-memory", sizeof("use-memory")) == 0)
 					s->rp[m].type |= CACHE_USE_MEMORY;
-				else if (strncmp(p3, "support-accept-encoding", sizeof("support-accept-encoding")) == 0)
-					s->rp[m].type |= CACHE_SUPPORT_ACCEPT_ENCODING;
-				else if (strncmp(p3, "use-gzip-deflate-only", sizeof("use-gzip-deflate-only")) == 0)
-					s->rp[m].type |= CACHE_USE_GZIP_DEFLATE_ONLY;
+				else if (strncmp(p3, "ignore-vary", sizeof("ignore-vary")) == 0)
+					s->rp[m].type |= CACHE_IGNORE_VARY;
+				else if (strncmp(p3, "memory-compress", sizeof("memory-compress")) == 0)
+					s->rp[m].type |= CACHE_MEMORY_COMPRESS;
 				else if (strncmp(p3, "ignore-cache-control-header", sizeof("ignore-cache-control-header")) == 0)
 					s->rp[m].type |= CACHE_IGNORE_CACHE_CONTROL_HEADER;
 				else if (strncmp(p3, "nocache",  sizeof("nocache")) == 0 || strncmp(p3, "no-cache", sizeof("no-cache")) == 0)
@@ -1465,6 +1482,16 @@ check_response_iscachable(server *srv, connection *con, plugin_data *p, handler_
 
 	if (con->http_status != 200) return 0;
 
+#ifdef LIGHTTPD_V14
+	if (NULL != (ds = (data_string *)array_get_element(con->response.headers, "Content-Encoding"))) {
+#else
+	if (NULL != (ds = (data_string *)array_get_element(con->response.headers, CONST_STR_LEN("Content-Encoding")))) {
+#endif
+		if (p->conf.debug)
+			log_error_write(srv, __FILE__, __LINE__, "sb", "ignore response uri with CE", con->uri.path);
+		return 0;
+	}
+
 	/* don't save response with 'Set-Cookie' */
 #ifdef LIGHTTPD_V14
 	if (NULL != (ds = (data_string *)array_get_element(con->response.headers, "Set-Cookie"))) {
@@ -1487,7 +1514,7 @@ check_response_iscachable(server *srv, connection *con, plugin_data *p, handler_
 		return 0;
 	}
 
-	if ((hctx->use_accept_encoding == 0) &&
+	if ((hctx->ignore_vary == 0) &&
 #ifdef LIGHTTPD_V14
 		(NULL != (ds = (data_string *)array_get_element(con->response.headers, "Vary")))
 #else
@@ -1689,7 +1716,7 @@ update_memory_cache_file(connection *con, handler_ctx *hctx)
 	headers = array_init();
 	for (i = 0; i < con->response.headers->used; i++) {
 		/* skip
-		 * Date Content-Length Last-Modified
+		 * Date Content-Length
 		 * X-Cache Transfer-Encoding Expires
 		 * Connection Server for all content
 		 * Cache-Control Age Via
@@ -1812,6 +1839,77 @@ update_response_header(server *srv, connection *con, handler_ctx *hctx)
 	}
 	return;
 }
+
+#ifdef USE_ZLIB
+static int
+gzip_memory_content(buffer *dst, void *start, off_t st_size, time_t mtime)
+{
+	unsigned char *c;
+	unsigned long crc;
+	z_stream z;
+
+	if (dst == NULL || start == NULL) return -1;
+
+	z.zalloc = Z_NULL;
+	z.zfree = Z_NULL;
+	z.opaque = Z_NULL;
+
+	if (Z_OK != deflateInit2(&z, Z_DEFAULT_COMPRESSION, Z_DEFLATED, -MAX_WBITS,  /* supress zlib-header */
+			 8, Z_DEFAULT_STRATEGY)) {
+		return -1;
+	}
+
+	z.next_in = (unsigned char *)start;
+	z.avail_in = st_size;
+	z.total_in = 0;
+
+	buffer_prepare_copy(dst, (z.avail_in * 1.1) + 12 + 18);
+	/* write gzip header */
+	c = (unsigned char *)dst->ptr;
+	c[0] = 0x1f;
+	c[1] = 0x8b;
+	c[2] = Z_DEFLATED;
+	c[3] = 0; /* options */
+	c[4] = (mtime >>  0) & 0xff;
+	c[5] = (mtime >>  8) & 0xff;
+	c[6] = (mtime >> 16) & 0xff;
+	c[7] = (mtime >> 24) & 0xff;
+	c[8] = 0x00; /* extra flags */
+	c[9] = 0x03; /* UNIX */
+
+	dst->used = 10;
+	z.next_out = (unsigned char *)dst->ptr + dst->used;
+	z.avail_out = dst->size - dst->used - 8;
+	z.total_out = 0;
+
+	if (Z_STREAM_END != deflate(&z, Z_FINISH)) {
+		deflateEnd(&z);
+		return -1;
+	}
+
+	/* trailer */
+	dst->used += z.total_out;
+
+	crc = generate_crc32c(start, st_size);
+	c = (unsigned char *)dst->ptr + dst->used;
+		
+	c[0] = (crc >>  0) & 0xff;
+	c[1] = (crc >>  8) & 0xff;
+	c[2] = (crc >> 16) & 0xff;
+	c[3] = (crc >> 24) & 0xff;
+	c[4] = (z.total_in >>  0) & 0xff;
+	c[5] = (z.total_in >>  8) & 0xff;
+	c[6] = (z.total_in >> 16) & 0xff;
+	c[7] = (z.total_in >> 24) & 0xff;
+	dst->used += 8;
+
+	if (Z_OK != deflateEnd(&z))
+		return -1;
+
+	dst->used ++; /* append trailing '\0' EOF chars */
+	return 0;
+}
+#endif
 
 /* check header and setup con->use_cache_file, write_cache_file
  * handle procedure:
@@ -1981,8 +2079,8 @@ mod_cache_uri_handler(server *srv, connection *con, void *p_d)
 				if (type & CACHE_NO_EXPIRE_HEADER) hctx->no_expire_header = 1;
 				if (type & CACHE_OVERRIDE_EXPIRE) hctx->override_expire = 1;
 				if (type & CACHE_USE_MEMORY) hctx->use_memory = 1;
-				if (type & CACHE_SUPPORT_ACCEPT_ENCODING) hctx->use_accept_encoding = 1;
-				if (type & CACHE_USE_GZIP_DEFLATE_ONLY) hctx->use_gzip_deflate_only = 1;
+				if (type & CACHE_IGNORE_VARY) hctx->ignore_vary = 1;
+				if (type & CACHE_MEMORY_COMPRESS) hctx->memory_compress = 1;
 				if (type & CACHE_IGNORE_CACHE_CONTROL_HEADER) hctx->ignore_cache_control_header = 1;
 
 				if (type & CACHE_UPDATE_ON_REFRESH) {
@@ -2025,23 +2123,21 @@ mod_cache_uri_handler(server *srv, connection *con, void *p_d)
 
 	if (expires == -1) con->use_cache_file = 0;
 
-	if (hctx->use_accept_encoding) {
-		hctx->request_encoding_type = 0;
-		if (
+#ifdef USE_ZLIB
+	hctx->request_encoding_type = 0;
+	if (
 #ifdef LIGHTTPD_V14
-			(NULL != (ds = (data_string *)array_get_element(con->request.headers, "Accept-Encoding")))
+		(NULL != (ds = (data_string *)array_get_element(con->request.headers, "Accept-Encoding")))
 #else
-			(NULL != (ds = (data_string *)array_get_element(con->request.headers, CONST_STR_LEN("Accept-Encoding"))))
+		(NULL != (ds = (data_string *)array_get_element(con->request.headers, CONST_STR_LEN("Accept-Encoding"))))
 #endif
-		) {
-			if (strstr(ds->value->ptr, "gzip")) {
-				hctx->request_encoding_type += 1;
-			}
-		       	if (strstr(ds->value->ptr, "deflate")) {
-				hctx->request_encoding_type += 2;
-			}
-		}
+	) {
+		if (strstr(ds->value->ptr, "gzip"))
+			hctx->request_encoding_type += 1;
+	       	if (strstr(ds->value->ptr, "deflate"))
+			hctx->request_encoding_type += 2;
 	}
+#endif
 
 	if (hctx->use_memory == 0) {
 		get_cache_filename(con, p, hctx->file);
@@ -2049,29 +2145,11 @@ mod_cache_uri_handler(server *srv, connection *con, void *p_d)
 		buffer_append_string_len(hctx->headerfile, CONST_STR_LEN(ASISEXT));
 		if (con->use_cache_file) {
 			/* check local cache file existence */
-			hctx->accepted_encoding_type = 0;
-			if (hctx->use_accept_encoding) {
-				if (hctx->request_encoding_type & 0x1) { /* gzip */
-					buffer_copy_string_buffer(hctx->gzipfile, hctx->file);
-					buffer_append_string_len(hctx->gzipfile, CONST_STR_LEN(".gzip"));
-					if (HANDLER_ERROR != stat_cache_get_entry(srv, con, hctx->gzipfile, &sce)) {
-						hctx->accepted_encoding_type = 1;
-					}
-				} else if (hctx->request_encoding_type & 0x2) { /* deflate */
-					buffer_copy_string_buffer(hctx->gzipfile, hctx->file);
-					buffer_append_string_len(hctx->gzipfile, CONST_STR_LEN(".deflate"));
-					if (HANDLER_ERROR != stat_cache_get_entry(srv, con, hctx->gzipfile, &sce)) {
-						hctx->accepted_encoding_type = 2;
-					}
-				}
-			}
-
-			if (hctx->accepted_encoding_type == 0 && (HANDLER_ERROR == stat_cache_get_entry(srv, con, hctx->file, &sce)))
+			if (HANDLER_ERROR == stat_cache_get_entry(srv, con, hctx->file, &sce))
 				con->use_cache_file = 0;
 
 			if (con->use_cache_file && check_memory_cache_existness(srv, con, hctx)) {
 				con->use_cache_file = 0;
-				hctx->accepted_encoding_type = 0;
 			}
 
 			if (con->use_cache_file == 1) {
@@ -2109,35 +2187,24 @@ mod_cache_uri_handler(server *srv, connection *con, void *p_d)
 		if (mc == NULL || mc->inuse == 0 || ((expires > 0) && (srv->cur_ts > mc->content_expire_ts))) {
 			con->use_cache_file = 0;
 		} else {
+#ifdef USE_ZLIB
 			switch(hctx->request_encoding_type) {
 				case 1:
-					if (mc->content[1] == NULL) {
-						if (hctx->use_gzip_deflate_only == 1 || mc->content[0] == NULL) {
-							con->use_cache_file = 0;
-						}
-					}
-					break;
 				case 2:
-					if (mc->content[2] == NULL) {
-						if (hctx->use_gzip_deflate_only == 1 || mc->content[0] == NULL) {
-							con->use_cache_file = 0;
-						}
-					}
-					break;
 				case 3:
-					if (mc->content[1] == NULL && mc->content[2] == NULL) {
-						if (hctx->use_gzip_deflate_only == 1 || mc->content[0] == NULL) {
-							con->use_cache_file = 0;
-						}
-					}
+					if (mc->gzip_content == NULL && mc->content == NULL)
+						con->use_cache_file = 0;
 					break;
 				case 0:
 				default:
-					if (mc->content[0] == NULL) {
+					if (mc->content == NULL)
 						con->use_cache_file = 0;
-					}
 					break;
 			}
+#else
+			if (mc->content == NULL)
+				con->use_cache_file = 0;
+#endif
 
 			if (con->use_cache_file == 1) {
 				con->mode = p->id;
@@ -2242,11 +2309,6 @@ mod_cache_docroot_handler(server *srv, connection *con, void *p_d)
 		if (con->physical.rel_path->used >= 2 && con->physical.rel_path->ptr[con->physical.rel_path->used-2] == '/')
 			buffer_append_string(con->physical.rel_path, DEFAULT_INDEX_FILENAME);
 
-		if (hctx->accepted_encoding_type == 1) /* append ".gzip" */
-			buffer_append_string_len(con->physical.rel_path, CONST_STR_LEN(".gzip"));
-		else if (hctx->accepted_encoding_type == 2) /* append ".deflate" */
-			buffer_append_string_len(con->physical.rel_path, CONST_STR_LEN(".deflate"));
-
 		con->mode = DIRECT;
 	}
 
@@ -2260,6 +2322,7 @@ mod_cache_handle_memory_storage(server *srv, connection *con, void *p_d)
 	handler_ctx *hctx = con->plugin_ctx[p->id];
 	struct memory_cache *mc;
 	buffer *store = NULL;
+	int accepted_encoding_type = 0;
 
 	if (con->uri.path->used == 0) return HANDLER_GO_ON;
 
@@ -2290,25 +2353,40 @@ mod_cache_handle_memory_storage(server *srv, connection *con, void *p_d)
 
 	mc = get_memory_cache(hctx);
 	if (mc && mc->inuse) {
-		if ((hctx->request_encoding_type & 0x1) && mc->content[1] != NULL) { /* gzip */
-			hctx->accepted_encoding_type = 1;
-			store = mc->content[1];
-		} else if ((hctx->request_encoding_type & 0x2) && mc->content[2] != NULL) { /* deflate */
-			hctx->accepted_encoding_type = 2;
-			store = mc->content[2];
-		} else if ( mc->content[0] != NULL) {
-			store = mc->content[0];
-			hctx->accepted_encoding_type = 0;
-		}
+#ifdef USE_ZLIB
+		if ((hctx->request_encoding_type & 0x1) && (mc->gzip_content != NULL)) {
+			store = mc->gzip_content;
+			accepted_encoding_type = 1;
+			response_header_insert(srv, con, CONST_STR_LEN("Content-Encoding"), CONST_STR_LEN("gzip"));
+		} else if ((hctx->request_encoding_type & 0x2) && (mc->gzip_content != NULL)) {
+			store = mc->gzip_content;
+			accepted_encoding_type = 2;
+			response_header_insert(srv, con, CONST_STR_LEN("Content-Encoding"), CONST_STR_LEN("deflate"));
+		} else 
+#endif
+		if (mc->content != NULL)
+			store = mc->content;
 
 		if (store != NULL) {
+			chunkqueue *cq;
 #ifdef LIGHTTPD_V14
-			chunkqueue_append_shared_buffer(con->write_queue, store); // use shared buffer
+			cq = con->write_queue;
 			con->file_finished = 1;
 #else
-			chunkqueue_append_shared_buffer(con->send, store); // use shared buffer
+			cq = con->send;
 			con->send->is_closed = 1;
 #endif
+			if (accepted_encoding_type == 2) {
+				buffer *b = NULL;
+				b = chunkqueue_get_append_buffer(cq);
+				buffer_append_memory(b, store->ptr + 10, store->used - 18);
+			} else {
+				chunkqueue_append_shared_buffer(cq, store);
+			}
+
+			if (accepted_encoding_type > 0)
+				response_header_insert(srv, con, CONST_STR_LEN("Vary"), CONST_STR_LEN("Accept-Encoding"));
+
 			return HANDLER_FINISHED;
 		}
 	}
@@ -2349,28 +2427,6 @@ mod_cache_handle_response_start(server *srv, connection *con, void *p_d)
 #endif
 				response_header_insert(srv, con, CONST_STR_LEN("X-Cache"), CONST_STR_LEN("HIT"));
 			}
-
-			if (hctx->accepted_encoding_type > 0) {
-				/* add "Vary" response header */
-#ifdef LIGHTTPD_V14
-				if (NULL == array_get_element(con->response.headers, "Vary")) {
-#else
-				if (NULL == array_get_element(con->response.headers, CONST_STR_LEN("Vary"))) {
-#endif
-					response_header_insert(srv, con, CONST_STR_LEN("Vary"), CONST_STR_LEN("Accept-Encoding"));
-				}
-				
-#ifdef LIGHTTPD_V14
-				if (NULL == array_get_element(con->response.headers, "Content-Encoding")) {
-#else
-				if (NULL == array_get_element(con->response.headers, CONST_STR_LEN("Content-Encoding"))) {
-#endif
-					if (hctx->accepted_encoding_type == 1)
-						response_header_insert(srv, con, CONST_STR_LEN("Content-Encoding"), CONST_STR_LEN("gzip"));
-					else
-						response_header_insert(srv, con, CONST_STR_LEN("Content-Encoding"), CONST_STR_LEN("deflate"));
-				}
-			}
 		}
 		return HANDLER_GO_ON;
 	}
@@ -2407,48 +2463,8 @@ mod_cache_handle_response_start(server *srv, connection *con, void *p_d)
 		return HANDLER_GO_ON;
 	}
 
-	hctx->response_encoding_type = 0;
-#ifdef LIGHTTPD_V14
-	if (NULL != (ds = (data_string *)array_get_element(con->response.headers, "Content-Encoding"))) {
-#else
-	if (NULL != (ds = (data_string *)array_get_element(con->response.headers, CONST_STR_LEN("Content-Encoding")))) {
-#endif
-		if (hctx->use_accept_encoding == 0) {
-			if (p->conf.debug)
-				log_error_write(srv, __FILE__, __LINE__, "sb", "ignore response uri with CE", con->uri.path);
-			return HANDLER_GO_ON;
-		}
-
-		if (strstr(ds->value->ptr, "gzip")) {
-			hctx->response_encoding_type = 1;
-		} else if (strstr(ds->value->ptr, "deflate")) {
-			hctx->response_encoding_type = 2;
-		} else {
-			/* unknow 'Content-Encoding' */
-			log_error_write(srv, __FILE__, __LINE__, "sbsb", "unknow response content-type", ds->value, "for", con->request.uri);
-			return HANDLER_GO_ON;
-		}
-	}
-
 	/* only http status 200 now */
 	if (check_response_iscachable(srv, con, p, hctx) == 0) return HANDLER_GO_ON;
-
-	hctx->accepted_encoding_type = 0;
-	if (hctx->use_accept_encoding) {
-		if (hctx->response_encoding_type == 0x1) { /* gzip */
-			if (hctx->use_memory == 0) {
-				buffer_copy_string_buffer(hctx->gzipfile, hctx->file);
-				buffer_append_string_len(hctx->gzipfile, CONST_STR_LEN(".gzip"));
-			}
-			hctx->accepted_encoding_type = 1;
-		} else if (hctx->response_encoding_type == 0x2) { /* deflate */
-			if (hctx->use_memory == 0) {
-				buffer_copy_string_buffer(hctx->gzipfile, hctx->file);
-				buffer_append_string_len(hctx->gzipfile, CONST_STR_LEN(".deflate"));
-			}
-			hctx->accepted_encoding_type = 2;
-		}
-	}
 
 	cache_save = splaytree_splay(cache_save, hctx->hash);
 	if (cache_save && (cache_save->key == (int) hctx->hash)) {
@@ -2468,10 +2484,7 @@ mod_cache_handle_response_start(server *srv, connection *con, void *p_d)
 		return HANDLER_GO_ON;
 	}
 
-	if (hctx->accepted_encoding_type > 0)
-		file = hctx->gzipfile;
-	else
-		file = hctx->file;
+	file = hctx->file;
 
 	/* create directory if needed */
 	if (HANDLER_ERROR != stat_cache_get_entry(srv, con, file, &sce)) {
@@ -2563,7 +2576,6 @@ mod_cache_cleanup(server *srv, connection *con, void *p_d)
 	plugin_data *p = p_d;
 	handler_ctx *hctx = con->plugin_ctx[p->id];
 	off_t len;
-	int i;
 
 	con->use_cache_file = 0;
 	con->write_cache_file = 0;
@@ -2579,29 +2591,59 @@ mod_cache_cleanup(server *srv, connection *con, void *p_d)
 				((hctx->savecontent->used == (con->response.content_length+1) || con->response.content_length == -1))) {
 				mc = get_memory_cache(hctx);
 				if (mc) {
-					i = hctx->accepted_encoding_type;
-					if (mc->content[i]) {
-						if (used_memory_size <= mc->content[i]->size)
+					if (mc->content) {
+						if (used_memory_size <= mc->content->size)
 							used_memory_size = 0;
 						else
-							used_memory_size -= mc->content[i]->size;
-						mc->content[i]->ref_count --; // remove share buffer flag
-						buffer_free(mc->content[i]);
-						if (mc->inuse && memory_cache_number > 0)
-							memory_cache_number --;
+							used_memory_size -= mc->content->size;
+						mc->content->ref_count --; // remove share buffer flag
+						buffer_free(mc->content);
 					}
+#ifdef USE_ZLIB
+					if (mc->gzip_content) {
+						if (used_memory_size <= mc->gzip_content->size)
+							used_memory_size = 0;
+						else
+							used_memory_size -= mc->gzip_content->size;
+						mc->gzip_content->ref_count --; // remove share buffer flag
+						buffer_free(mc->gzip_content);
+					}
+#endif
+					if (mc->inuse && memory_cache_number > 0)
+						memory_cache_number --;
 
 					if (p->conf.debug)
 						log_error_write(srv, __FILE__, __LINE__, "sbbs", "save http://", con->uri.authority, con->uri.path, "to memory");
-					mc->content[i] = hctx->savecontent;
+					mc->content = hctx->savecontent;
 					hctx->savecontent = NULL;
 					mc->inuse = 1;
 					memory_cache_number ++;
-					mc->content[i]->ref_count = 1; /* setup shared flag */
-					used_memory_size += mc->content[i]->size;
+					mc->content->ref_count = 1; /* setup shared flag */
+					used_memory_size += mc->content->size;
 					/* update memory items expire time */
 					if (hctx->expires > 0) mc->content_expire_ts = hctx->expires;
 					else mc->content_expire_ts = srv->cur_ts + 60; /* 1 minutes */
+#ifdef USE_ZLIB
+					if (hctx->memory_compress) {
+						int ret = 0;
+						buffer *b;
+
+						b = buffer_init();
+						ret = gzip_memory_content(b, mc->content->ptr, mc->content->used - 1, hctx->mtime?hctx->mtime:time(NULL));
+						if (ret != 0) {
+							mc->gzip_content = NULL;
+						} else {
+							mc->gzip_content = buffer_init();
+							buffer_copy_string_buffer(mc->gzip_content, b);
+							mc->gzip_content->ref_count = 1;
+							used_memory_size += mc->gzip_content->size;
+							if (p->conf.debug)
+								log_error_write(srv, __FILE__, __LINE__, "sbbs", "save gzip of http://", con->uri.authority, con->uri.path, "to memory");
+						}
+						buffer_free(b);
+					}
+#endif
+
 #ifdef LIGHTTPD_V14
 					status_counter_set(srv, CONST_STR_LEN(CACHE_MEMORY), used_memory_size >> 20);
 					status_counter_set(srv, CONST_STR_LEN(CACHE_MEMORY_ITEMS), memory_cache_number);
@@ -2617,8 +2659,6 @@ mod_cache_cleanup(server *srv, connection *con, void *p_d)
 			len = lseek(hctx->fd, 0, SEEK_CUR);
 			close(hctx->fd);
 			hctx->fd = 0;
-			if (hctx->accepted_encoding_type > 0)
-				buffer_copy_string_buffer(hctx->file, hctx->gzipfile);
 			if (hctx->error == 0 && con->state != CON_STATE_ERROR &&
 				((len == con->response.content_length) || con->response.content_length == -1)) {
 				if (rename(hctx->tmpfile->ptr, hctx->file->ptr)) {
