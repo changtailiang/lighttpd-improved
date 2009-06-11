@@ -2032,6 +2032,7 @@ mod_cache_uri_handler(server *srv, connection *con, void *p_d)
 				}
 			} else break;
 		}
+
 		if (i == p->conf.domains_size) {
 			con->plugin_ctx[p->id] = NULL;
 			handler_ctx_free(hctx);
@@ -2040,7 +2041,6 @@ mod_cache_uri_handler(server *srv, connection *con, void *p_d)
 			return HANDLER_GO_ON;
 		}
 	}
-
 
 	/* default to use local cache file since now*/
 	con->use_cache_file = 1;
@@ -2057,6 +2057,8 @@ mod_cache_uri_handler(server *srv, connection *con, void *p_d)
 					return HANDLER_ERROR;
 				}
 			} else {
+				if (p->conf.debug)
+					log_error_write(srv, __FILE__, __LINE__, "sbsd", "PCRE URI", con->uri.path, "matched with rule #", i);
 				expires = p->conf.rp[i].expires;
 				/* default to use IGNORE_RELOAD */
 				type = p->conf.rp[i].type;
