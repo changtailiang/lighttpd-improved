@@ -365,6 +365,8 @@ typedef struct {
 		MAGNET_ENV_REQUEST_METHOD,
 		MAGNET_ENV_REQUEST_URI,
 		MAGNET_ENV_REQUEST_ORIG_URI,
+		MAGNET_ENV_REQUEST_PATH_INFO,
+		MAGNET_ENV_REQUEST_REMOTE_IP,
 		MAGNET_ENV_REQUEST_PROTOCOL
        	} type;
 } magnet_env_t;
@@ -387,6 +389,8 @@ static buffer *magnet_env_get_buffer(server *srv, connection *con, const char *k
 		{ "request.method", MAGNET_ENV_REQUEST_METHOD },
 		{ "request.uri", MAGNET_ENV_REQUEST_URI },
 		{ "request.orig-uri", MAGNET_ENV_REQUEST_ORIG_URI },
+		{ "request.path-info", MAGNET_ENV_REQUEST_PATH_INFO },
+		{ "request.remote-ip", MAGNET_ENV_REQUEST_REMOTE_IP },
 		{ "request.protocol", MAGNET_ENV_REQUEST_PROTOCOL },
 
 		{ NULL, MAGNET_ENV_UNSET }
@@ -420,6 +424,8 @@ static buffer *magnet_env_get_buffer(server *srv, connection *con, const char *k
 		break;
 	case MAGNET_ENV_REQUEST_URI:      dest = con->request.uri; break;
 	case MAGNET_ENV_REQUEST_ORIG_URI: dest = con->request.orig_uri; break;
+	case MAGNET_ENV_REQUEST_PATH_INFO: dest = con->request.pathinfo; break;
+	case MAGNET_ENV_REQUEST_REMOTE_IP: dest = con->dst_addr_buf; break;
 	case MAGNET_ENV_REQUEST_PROTOCOL:
 		buffer_copy_string(srv->tmp_buf, get_http_version_name(con->request.http_version));
 		dest = srv->tmp_buf;
@@ -484,6 +490,42 @@ static int magnet_env_set(lua_State *L) {
 
 		return luaL_error(L, "couldn't store '%s' in lighty.env[]", key);
 	}
+
+	return 0;
+}
+
+
+static int magnet_cgi_get(lua_State *L) {
+	connection *con;
+	data_string *ds;
+
+	const char *key = luaL_checkstring(L, 2);
+
+	lua_pushstring(L, "lighty.con");
+	lua_gettable(L, LUA_REGISTRYINDEX);
+	con = lua_touserdata(L, -1);
+	lua_pop(L, 1);
+
+	if (NULL != (ds = (data_string *)array_get_element(con->environment, key)) && ds->value->used)
+		lua_pushlstring(L, CONST_BUF_LEN(ds->value));
+	else
+		lua_pushnil(L);
+
+	return 1;
+}
+
+static int magnet_cgi_set(lua_State *L) {
+	connection *con;
+
+	const char *key = luaL_checkstring(L, 2);
+	const char *val = luaL_checkstring(L, 3);
+
+	lua_pushstring(L, "lighty.con");
+	lua_gettable(L, LUA_REGISTRYINDEX);
+	con = lua_touserdata(L, -1);
+	lua_pop(L, 1);
+
+	array_set_key_value(con->environment, key, strlen(key), val, strlen(val));
 
 	return 0;
 }
@@ -711,6 +753,15 @@ static handler_t magnet_attract(server *srv, connection *con, plugin_data *p, bu
 
 	lua_newtable(L); /*  {}                                      (sp += 1) */
 	lua_newtable(L); /* the meta-table for the request-table     (sp += 1) */
+	lua_pushcfunction(L, magnet_cgi_get);                     /* (sp += 1) */
+	lua_setfield(L, -2, "__index");                           /* (sp -= 1) */
+	lua_pushcfunction(L, magnet_cgi_set);                     /* (sp += 1) */
+	lua_setfield(L, -2, "__newindex");                        /* (sp -= 1) */
+	lua_setmetatable(L, -2); /* tie the metatable to req_env     (sp -= 1) */
+	lua_setfield(L, -2, "req_env"); /* content = {}              (sp -= 1) */
+
+	lua_newtable(L); /*  {}                                      (sp += 1) */
+	lua_newtable(L); /* the meta-table for the request-table     (sp += 1) */
 	lua_pushcfunction(L, magnet_status_get);                  /* (sp += 1) */
 	lua_setfield(L, -2, "__index");                           /* (sp -= 1) */
 	lua_pushcfunction(L, magnet_status_set);                  /* (sp += 1) */
@@ -840,6 +891,7 @@ URIHANDLER_FUNC(mod_magnet_physical) {
 
 /* this function is called at dlopen() time and inits the callbacks */
 
+int mod_magnet_plugin_init(plugin *p);
 int mod_magnet_plugin_init(plugin *p) {
 	p->version     = LIGHTTPD_VERSION_ID;
 	p->name        = buffer_init_string("magnet");
@@ -856,6 +908,7 @@ int mod_magnet_plugin_init(plugin *p) {
 }
 
 #else
+int mod_magnet_plugin_init(plugin *p);
 int mod_magnet_plugin_init(plugin *p) {
 	UNUSED(p);
 	return -1;

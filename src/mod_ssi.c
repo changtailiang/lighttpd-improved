@@ -37,6 +37,7 @@
 #endif
 
 #include "etag.h"
+#include "version.h"
 
 /* The newest modified time of included files for include statement */
 static volatile time_t include_file_last_mtime = 0;
@@ -69,6 +70,7 @@ FREE_FUNC(mod_ssi_free) {
 			plugin_config *s = p->config_storage[i];
 
 			array_free(s->ssi_extension);
+			buffer_free(s->content_type);
 
 			free(s);
 		}
@@ -100,6 +102,7 @@ SETDEFAULTS_FUNC(mod_ssi_set_defaults) {
 
 	config_values_t cv[] = {
 		{ "ssi.extension",              NULL, T_CONFIG_ARRAY, T_CONFIG_SCOPE_CONNECTION },       /* 0 */
+		{ "ssi.content-type",           NULL, T_CONFIG_STRING, T_CONFIG_SCOPE_CONNECTION },      /* 1 */
 		{ NULL,                         NULL, T_CONFIG_UNSET, T_CONFIG_SCOPE_UNSET }
 	};
 
@@ -112,8 +115,10 @@ SETDEFAULTS_FUNC(mod_ssi_set_defaults) {
 
 		s = calloc(1, sizeof(plugin_config));
 		s->ssi_extension  = array_init();
+		s->content_type = buffer_init();
 
 		cv[0].destination = s->ssi_extension;
+		cv[1].destination = s->content_type;
 
 		p->config_storage[i] = s;
 
@@ -139,7 +144,7 @@ SETDEFAULTS_FUNC(mod_ssi_set_defaults) {
 	return HANDLER_GO_ON;
 }
 
-int ssi_env_add(array *env, const char *key, const char *val) {
+static int ssi_env_add(array *env, const char *key, const char *val) {
 	data_string *ds;
 
 	if (NULL == (ds = (data_string *)array_get_unused_element(env, TYPE_STRING))) {
@@ -199,6 +204,34 @@ static int ssi_env_add_request_headers(server *srv, connection *con, plugin_data
 		}
 	}
 
+	for (i = 0; i < con->environment->used; i++) {
+		data_string *ds;
+
+		ds = (data_string *)con->environment->data[i];
+
+		if (ds->value->used && ds->key->used) {
+			size_t j;
+
+			buffer_reset(srv->tmp_buf);
+			buffer_prepare_append(srv->tmp_buf, ds->key->used + 2);
+
+			for (j = 0; j < ds->key->used - 1; j++) {
+				char c = '_';
+				if (light_isalpha(ds->key->ptr[j])) {
+					/* upper-case */
+					c = ds->key->ptr[j] & ~32;
+				} else if (light_isdigit(ds->key->ptr[j])) {
+					/* copy */
+					c = ds->key->ptr[j];
+				}
+				srv->tmp_buf->ptr[srv->tmp_buf->used++] = c;
+			}
+			srv->tmp_buf->ptr[srv->tmp_buf->used] = '\0';
+
+			ssi_env_add(p->ssi_cgi_env, srv->tmp_buf->ptr, ds->value->ptr);
+		}
+	}
+
 	return 0;
 }
 
@@ -216,7 +249,7 @@ static int build_ssi_cgi_vars(server *srv, connection *con, plugin_data *p) {
 
 	array_reset(p->ssi_cgi_env);
 
-	ssi_env_add(p->ssi_cgi_env, CONST_STRING("SERVER_SOFTWARE"), PACKAGE_NAME"/"PACKAGE_VERSION);
+	ssi_env_add(p->ssi_cgi_env, CONST_STRING("SERVER_SOFTWARE"), PACKAGE_DESC);
 	ssi_env_add(p->ssi_cgi_env, CONST_STRING("SERVER_NAME"),
 #ifdef HAVE_IPV6
 		     inet_ntop(srv_sock->addr.plain.sa_family,
@@ -656,17 +689,22 @@ static int process_ssi_stmt(server *srv, connection *con, plugin_data *p,
 		if (p->if_is_false) break;
 
 		b = chunkqueue_get_append_buffer(con->write_queue);
-		buffer_copy_string_len(b, CONST_STR_LEN("<pre>"));
 		for (i = 0; i < p->ssi_vars->used; i++) {
 			data_string *ds = (data_string *)p->ssi_vars->data[p->ssi_vars->sorted[i]];
 
 			buffer_append_string_buffer(b, ds->key);
-			buffer_append_string_len(b, CONST_STR_LEN(": "));
-			buffer_append_string_buffer(b, ds->value);
-			buffer_append_string_len(b, CONST_STR_LEN("<br />"));
-
+			buffer_append_string_len(b, CONST_STR_LEN("="));
+			buffer_append_string_encoded(b, CONST_BUF_LEN(ds->value), ENCODING_MINIMAL_XML);
+			buffer_append_string_len(b, CONST_STR_LEN("\n"));
 		}
-		buffer_append_string_len(b, CONST_STR_LEN("</pre>"));
+		for (i = 0; i < p->ssi_cgi_env->used; i++) {
+			data_string *ds = (data_string *)p->ssi_cgi_env->data[p->ssi_cgi_env->sorted[i]];
+
+			buffer_append_string_buffer(b, ds->key);
+			buffer_append_string_len(b, CONST_STR_LEN("="));
+			buffer_append_string_encoded(b, CONST_BUF_LEN(ds->value), ENCODING_MINIMAL_XML);
+			buffer_append_string_len(b, CONST_STR_LEN("\n"));
+		}
 
 		break;
 	case SSI_EXEC: {
@@ -1029,7 +1067,11 @@ static int mod_ssi_handle_request(server *srv, connection *con, plugin_data *p) 
 	con->file_finished = 1;
 	con->mode = p->id;
 
-	response_header_overwrite(srv, con, CONST_STR_LEN("Content-Type"), CONST_STR_LEN("text/html"));
+	if (p->conf.content_type->used <= 1) {
+		response_header_overwrite(srv, con, CONST_STR_LEN("Content-Type"), CONST_STR_LEN("text/html"));
+	} else {
+		response_header_overwrite(srv, con, CONST_STR_LEN("Content-Type"), CONST_BUF_LEN(p->conf.content_type));
+	}
 
 	{
   	/* Generate "ETag" & "Last-Modified" headers */
@@ -1068,6 +1110,7 @@ static int mod_ssi_patch_connection(server *srv, connection *con, plugin_data *p
 	plugin_config *s = p->config_storage[0];
 
 	PATCH(ssi_extension);
+	PATCH(content_type);
 
 	/* skip the first, the global context */
 	for (i = 1; i < srv->config_context->used; i++) {
@@ -1083,6 +1126,8 @@ static int mod_ssi_patch_connection(server *srv, connection *con, plugin_data *p
 
 			if (buffer_is_equal_string(du->key, CONST_STR_LEN("ssi.extension"))) {
 				PATCH(ssi_extension);
+			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("ssi.content-type"))) {
+				PATCH(content_type);
 			}
 		}
 	}
@@ -1125,6 +1170,7 @@ URIHANDLER_FUNC(mod_ssi_physical_path) {
 
 /* this function is called at dlopen() time and inits the callbacks */
 
+int mod_ssi_plugin_init(plugin *p);
 int mod_ssi_plugin_init(plugin *p) {
 	p->version     = LIGHTTPD_VERSION_ID;
 	p->name        = buffer_init_string("ssi");

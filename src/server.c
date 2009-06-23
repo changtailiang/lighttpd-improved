@@ -29,6 +29,7 @@
 #include "plugin.h"
 #include "joblist.h"
 #include "network_backends.h"
+#include "version.h"
 
 #ifdef HAVE_GETOPT_H
 #include <getopt.h>
@@ -62,6 +63,17 @@
 #ifndef __sgi
 /* IRIX doesn't like the alarm based time() optimization */
 /* #define USE_ALARM */
+#endif
+
+#ifdef HAVE_GETUID
+# ifndef HAVE_ISSETUGID
+
+static int l_issetugid() {
+	return (geteuid() != getuid() || getegid() != getgid());
+}
+
+#  define issetugid l_issetugid
+# endif
 #endif
 
 static volatile sig_atomic_t srv_shutdown = 0;
@@ -157,6 +169,7 @@ static void daemonize(void) {
 
 static server *server_init(void) {
 	int i;
+	FILE *frandom = NULL;
 
 	server *srv = calloc(1, sizeof(*srv));
 	assert(srv);
@@ -196,6 +209,19 @@ static server *server_init(void) {
 		srv->mtime_cache[i].mtime = (time_t)-1;
 		srv->mtime_cache[i].str = buffer_init();
 	}
+
+	if ((NULL != (frandom = fopen("/dev/urandom", "rb")) || NULL != (frandom = fopen("/dev/random", "rb")))
+	            && 1 == fread(srv->entropy, sizeof(srv->entropy), 1, frandom)) {
+		srand(*(unsigned int*)srv->entropy);
+		srv->is_real_entropy = 1;
+	} else {
+		unsigned int j;
+		srand(time(NULL) ^ getpid());
+		srv->is_real_entropy = 0;
+		for (j = 0; j < sizeof(srv->entropy); j++)
+			srv->entropy[j] = rand();
+	}
+	if (frandom) fclose(frandom);
 
 	srv->cur_ts = time(NULL);
 	srv->startup_ts = srv->cur_ts;
@@ -329,7 +355,7 @@ static void show_version (void) {
 #else
 # define TEXT_SSL
 #endif
-	char *b = PACKAGE_NAME "-" PACKAGE_VERSION TEXT_SSL \
+	char *b = PACKAGE_DESC TEXT_SSL \
 " - a light and fast webserver\n" \
 "Build-Date: " __DATE__ " " __TIME__ "\n";
 ;
@@ -466,7 +492,7 @@ static void show_help (void) {
 #else
 # define TEXT_SSL
 #endif
-	char *b = PACKAGE_NAME "-" PACKAGE_VERSION TEXT_SSL " ("__DATE__ " " __TIME__ ")" \
+	char *b = PACKAGE_DESC TEXT_SSL " ("__DATE__ " " __TIME__ ")" \
 " - a light and fast webserver\n" \
 "usage:\n" \
 " -f <name>  filename of the config-file\n" \
@@ -593,7 +619,7 @@ int main (int argc, char **argv) {
 
 	/* UID handling */
 #ifdef HAVE_GETUID
-	if (!i_am_root && (geteuid() == 0 || getegid() == 0)) {
+	if (!i_am_root && issetugid()) {
 		/* we are setuid-root */
 
 		log_error_write(srv, __FILE__, __LINE__, "s",

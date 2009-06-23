@@ -728,10 +728,15 @@ static int http_auth_basic_password_compare(server *srv, mod_auth_plugin_data *p
 			char c = username->ptr[i];
 
 			if (!isalpha(c) &&
-			    !isdigit(c)) {
+			    !isdigit(c) &&
+			    (c != ' ') &&
+			    (c != '@') &&
+			    (c != '-') &&
+			    (c != '_') &&
+			    (c != '.') ) {
 
 				log_error_write(srv, __FILE__, __LINE__, "sbd",
-					"ldap: invalid character (a-zA-Z0-9 allowed) in username:", username, i);
+					"ldap: invalid character (- _.@a-zA-Z0-9 allowed) in username:", username, i);
 
 				return -1;
 			}
@@ -865,7 +870,11 @@ int http_auth_basic_check(server *srv, connection *con, mod_auth_plugin_data *p,
 		buffer_free(username);
 		buffer_free(password);
 
-		log_error_write(srv, __FILE__, __LINE__, "s", "get_password failed");
+		if (AUTH_BACKEND_UNSET == p->conf.auth_backend) {
+			log_error_write(srv, __FILE__, __LINE__, "s", "auth.backend is not set");
+		} else {
+			log_error_write(srv, __FILE__, __LINE__, "s", "get_password failed");
+		}
 
 		return 0;
 	}
@@ -1184,6 +1193,7 @@ int http_auth_digest_generate_nonce(server *srv, mod_auth_plugin_data *p, buffer
 	/* we assume sizeof(time_t) == 4 here, but if not it ain't a problem at all */
 	LI_ltostr(hh, srv->cur_ts);
 	MD5_Update(&Md5Ctx, (unsigned char *)hh, strlen(hh));
+	MD5_Update(&Md5Ctx, (unsigned char *)srv->entropy, sizeof(srv->entropy));
 	LI_ltostr(hh, rand());
 	MD5_Update(&Md5Ctx, (unsigned char *)hh, strlen(hh));
 

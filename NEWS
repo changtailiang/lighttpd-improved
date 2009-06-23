@@ -3,7 +3,61 @@
 NEWS
 ====
 
-- 1.4.22 -
+- 1.4.23 -
+  * Added some extra warning options in cmake and fix the resulting warnings (unused/static functions)
+  * New lighttpd man page (moved it to section 8) (fixes #1875)
+  * Create rrd file for empty rrdfile in mod_rrdtool (#1788)
+  * Fix workaround for incorrect path info/scriptname if fastcgi prefix is "/" (fixes #729)
+  * Finally removed spawn-fcgi
+  * Allow xattr to overwrite mime type (fixes #1929)
+  * Remove link from errormsg about fastcgi apps (fixes #1942)
+  * Strip trailing dot from "Host:" header
+  * Remove the optional port info from SERVER_NAME (thx Mr_Bond)
+  * Fix mod_proxy RoundRobin (off by one problem if only one backend is up)
+  * Rename configure.in to configure.ac, with small cleanups (fixes #1932)
+  * Add proper SUID bit detection (fixes #416)
+  * Check for regular file in mod_cgi, so we don't try to start directories
+  * Include mmap.h from chunk.h to fix some problems with #define mmap mmap64 (fixes #1923)
+  * Add support for pipe logging for server.errorlog (fixes #296)
+  * Add revision number to package version for svn/git checkouts
+  * Use server.tag for SERVER_SOFTWARE if configured (fixes #357)
+  * Fix trailing zero char in REQUEST_URI after "strip-request-uri" in mod_fastcgi
+  * mod_magnet: Add env["request.remote-ip"] (fixes #1740)
+  * mod_magnet: Add env["request.path-info"]
+  * Change name/version separator back to "/" (affects every place where the version is printed)
+  * Fix bug with FastCGI request id overflow under high load; just use always id 1 as we don't use multiplexing. (thx jgray)
+  * Add some dirlisting enhancements (fixes #1458)
+  * Add option to enable TCP_DEFER_ACCEPT (fixes #1447)
+  * Limit amount of bytes read for one read-event (fixes #1070)
+  * Add evasive.silent option (fixes #1438)
+  * Make mod_extforward headers configurable (fixes #1545)
+  * Add '%_' pattern for complete hostname in mod_evhost (fixes #1737)
+  * Add IPv6 support to mod_proxy (fixes #1537)
+  * mod_ssi printenv: print cgi env, add environment vars to cgi env (fixes #1713)
+  * Fix error message if no auth backend was set
+  * Fix SERVER_NAME port stripping (fixes #1968)
+  * Fix x-sendfile 2gb limiting (fixes #1970)
+  * Fix mod_cgi environment keys mangling (fixes #1969)
+  * Fix workaround for incorrect path info/scriptname if scgi prefix is "/" (fixes #729)
+  * Fix max-age value in mod_expire for 'modification' (fixes #1978)
+  * Fix evasive.silent option (#1438)
+  * Fix mod-fastcgi counters
+  * Modify fastcgi error message
+  * Backup errno for later usage (reported by Guido Reina via mailinglist)
+  * Improve FastCGI performance (fixes #1999)
+  * Workaround broken operating systems: check for trailing '/' in filenames (fixes #1989)
+  * Allow using pcre with cross-compiling (pcre-config got fixed; fixes #1986)
+  * Add "lighty.req_env" table to mod_magnet for setting/getting environment values for cgi (fixes #1967, thx presbrey)
+  * Fix segfault in mod_expire after failed config parsing (fixes #1992)
+  * Add ssi.content-type option (default text/html, fixes #615)
+  * Add support for "real" entropy from /dev/[u]random (fixes #1977)
+  * Adding support for additional chars in LDAP usernames (fixes #1941)
+  * Ignore multiple "If-None-Match" headers (only use first one, fixes #753)
+  * Fix 100% cpu usage if time() < 0 (thx to gaspa and cate, fixes #1964)
+  * Allow max-keep-alive-requests to depend on conditional (fixes #1881)
+  * Make dependency on svnversion/git optional (for devel versionstamp, fixes #2009)
+
+- 1.4.22 - 2009-03-07
   * Fix wrong lua type for CACHE_MISS/CACHE_HIT in mod_cml (fixes #533)
   * Fix default vhost in mod_simple_vhost (fixes #1905)
   * Handle EINTR in mod_rrdtool (fixes #604)

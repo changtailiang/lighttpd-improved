@@ -24,6 +24,7 @@
 #include <fcntl.h>
 
 #include "server.h"
+#include "stat_cache.h"
 #include "keyvalue.h"
 #include "log.h"
 #include "connections.h"
@@ -35,6 +36,8 @@
 #ifdef HAVE_SYS_FILIO_H
 # include <sys/filio.h>
 #endif
+
+#include "version.h"
 
 enum {EOL_UNSET, EOL_N, EOL_RN};
 
@@ -696,11 +699,11 @@ static int cgi_env_add(char_array *env, const char *key, size_t key_len, const c
 
 	if (!key || !val) return -1;
 
-	dst = malloc(key_len + val_len + 3);
+	dst = malloc(key_len + val_len + 2);
 	memcpy(dst, key, key_len);
 	dst[key_len] = '=';
-	/* add the \0 from the value */
-	memcpy(dst + key_len + 1, val, val_len + 1);
+	memcpy(dst + key_len + 1, val, val_len);
+	dst[key_len + 1 + val_len] = '\0';
 
 	if (env->size == 0) {
 		env->size = 16;
@@ -776,25 +779,23 @@ static int cgi_create_env(server *srv, connection *con, plugin_data *p, buffer *
 		/* not needed */
 		close(to_cgi_fds[1]);
 
-		/* HACK:
-		 * this is not nice, but it works
-		 *
-		 * we feed the stderr of the CGI to our errorlog, if possible
-		 */
-		if (srv->errorlog_mode == ERRORLOG_FILE) {
-			close(STDERR_FILENO);
-			dup2(srv->errorlog_fd, STDERR_FILENO);
-		}
-
 		/* create environment */
 		env.ptr = NULL;
 		env.size = 0;
 		env.used = 0;
 
-		cgi_env_add(&env, CONST_STR_LEN("SERVER_SOFTWARE"), CONST_STR_LEN(PACKAGE_NAME"/"PACKAGE_VERSION));
+		if (buffer_is_empty(con->conf.server_tag)) {
+			cgi_env_add(&env, CONST_STR_LEN("SERVER_SOFTWARE"), CONST_STR_LEN(PACKAGE_DESC));
+		} else {
+			cgi_env_add(&env, CONST_STR_LEN("SERVER_SOFTWARE"), CONST_BUF_LEN(con->conf.server_tag));
+		}
 
 		if (!buffer_is_empty(con->server_name)) {
-			cgi_env_add(&env, CONST_STR_LEN("SERVER_NAME"), CONST_BUF_LEN(con->server_name));
+			size_t len = con->server_name->used - 1;
+			char *colon = strchr(con->server_name->ptr, ':');
+			if (colon) len = colon - con->server_name->ptr;
+
+			cgi_env_add(&env, CONST_STR_LEN("SERVER_NAME"), con->server_name->ptr, len);
 		} else {
 #ifdef HAVE_IPV6
 			s = inet_ntop(srv_sock->addr.plain.sa_family,
@@ -972,9 +973,15 @@ static int cgi_create_env(server *srv, connection *con, plugin_data *p, buffer *
 				buffer_prepare_append(p->tmp_buf, ds->key->used + 2);
 
 				for (j = 0; j < ds->key->used - 1; j++) {
-					p->tmp_buf->ptr[p->tmp_buf->used++] =
-						light_isalnum((unsigned char)ds->key->ptr[j]) ?
-						toupper((unsigned char)ds->key->ptr[j]) : '_';
+					char cr = '_';
+					if (light_isalpha(ds->key->ptr[j])) {
+						/* upper-case */
+						cr = ds->key->ptr[j] & ~32;
+					} else if (light_isdigit(ds->key->ptr[j])) {
+						/* copy */
+						cr = ds->key->ptr[j];
+					}
+					p->tmp_buf->ptr[p->tmp_buf->used++] = cr;
 				}
 				p->tmp_buf->ptr[p->tmp_buf->used++] = '\0';
 
@@ -1203,12 +1210,16 @@ URIHANDLER_FUNC(cgi_is_handled) {
 	size_t k, s_len;
 	plugin_data *p = p_d;
 	buffer *fn = con->physical.path;
+	stat_cache_entry *sce = NULL;
 
 	if (con->mode != DIRECT) return HANDLER_GO_ON;
 
 	if (fn->used == 0) return HANDLER_GO_ON;
 
 	mod_cgi_patch_connection(srv, con, p);
+
+	if (HANDLER_ERROR == stat_cache_get_entry(srv, con, con->physical.path, &sce)) return HANDLER_GO_ON;
+	if (!S_ISREG(sce->st.st_mode)) return HANDLER_GO_ON;
 
 	s_len = fn->used - 1;
 
@@ -1369,6 +1380,7 @@ SUBREQUEST_FUNC(mod_cgi_handle_subrequest) {
 }
 
 
+int mod_cgi_plugin_init(plugin *p);
 int mod_cgi_plugin_init(plugin *p) {
 	p->version     = LIGHTTPD_VERSION_ID;
 	p->name        = buffer_init_string("cgi");

@@ -86,10 +86,18 @@ static int request_check_hostname(server *srv, connection *con, buffer *host) {
 	if (host_len == 0) return -1;
 
 	/* if the hostname ends in a "." strip it */
-	if (host->ptr[host_len-1] == '.') host_len -= 1;
+	if (host->ptr[host_len-1] == '.') {
+		/* shift port info one left */
+		if (NULL != colon) memmove(colon-1, colon, host->used - host_len);
+		else host->ptr[host_len-1] = '\0';
+		host_len -= 1;
+		host->used -= 1;
+	}
+
+	if (host_len == 0) return -1;
 
 	/* scan from the right and skip the \0 */
-	for (i = host_len - 1; i + 1 > 0; i--) {
+	for (i = host_len; i-- > 0; ) {
 		const char c = host->ptr[i];
 
 		switch (stage) {
@@ -200,7 +208,7 @@ static int request_check_hostname(server *srv, connection *con, buffer *host) {
 #define DUMP_HEADER
 #endif
 
-int http_request_split_value(array *vals, buffer *b) {
+static int http_request_split_value(array *vals, buffer *b) {
 	char *s;
 	size_t i;
 	int state = 0;
@@ -262,7 +270,7 @@ int http_request_split_value(array *vals, buffer *b) {
 	return 0;
 }
 
-int request_uri_is_valid_char(unsigned char c) {
+static int request_uri_is_valid_char(unsigned char c) {
 	if (c <= 32) return 0;
 	if (c == 127) return 0;
 	if (c == 255) return 0;
@@ -948,18 +956,8 @@ int http_request_parse(server *srv, connection *con) {
 								if (!con->request.http_if_none_match) {
 									con->request.http_if_none_match = ds->value->ptr;
 								} else {
-									con->http_status = 400;
-									con->keep_alive = 0;
-
-									if (srv->srvconf.log_request_header_on_error) {
-										log_error_write(srv, __FILE__, __LINE__, "s",
-												"duplicate If-None-Match-header -> 400");
-										log_error_write(srv, __FILE__, __LINE__, "Sb",
-												"request-header:\n",
-												con->request.request);
-									}
-									array_insert_unique(con->request.headers, (data_unset *)ds);
-									return 0;
+									ds->free((data_unset*) ds);
+									ds = NULL;
 								}
 							} else if (cmp > 0 && 0 == (cmp = buffer_caseless_compare(CONST_BUF_LEN(ds->key), CONST_STR_LEN("Range")))) {
 								if (!con->request.http_range) {

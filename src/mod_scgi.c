@@ -38,6 +38,8 @@
 #include <sys/wait.h>
 #endif
 
+#include "version.h"
+
 enum {EOL_UNSET, EOL_N, EOL_RN};
 
 /*
@@ -372,7 +374,7 @@ static void handler_ctx_free(handler_ctx *hctx) {
 	free(hctx);
 }
 
-scgi_proc *scgi_process_init() {
+static scgi_proc *scgi_process_init() {
 	scgi_proc *f;
 
 	f = calloc(1, sizeof(*f));
@@ -384,7 +386,7 @@ scgi_proc *scgi_process_init() {
 	return f;
 }
 
-void scgi_process_free(scgi_proc *f) {
+static void scgi_process_free(scgi_proc *f) {
 	if (!f) return;
 
 	scgi_process_free(f->next);
@@ -394,7 +396,7 @@ void scgi_process_free(scgi_proc *f) {
 	free(f);
 }
 
-scgi_extension_host *scgi_host_init() {
+static scgi_extension_host *scgi_host_init() {
 	scgi_extension_host *f;
 
 	f = calloc(1, sizeof(*f));
@@ -409,7 +411,7 @@ scgi_extension_host *scgi_host_init() {
 	return f;
 }
 
-void scgi_host_free(scgi_extension_host *h) {
+static void scgi_host_free(scgi_extension_host *h) {
 	if (!h) return;
 
 	buffer_free(h->host);
@@ -426,7 +428,7 @@ void scgi_host_free(scgi_extension_host *h) {
 
 }
 
-scgi_exts *scgi_extensions_init() {
+static scgi_exts *scgi_extensions_init() {
 	scgi_exts *f;
 
 	f = calloc(1, sizeof(*f));
@@ -434,7 +436,7 @@ scgi_exts *scgi_extensions_init() {
 	return f;
 }
 
-void scgi_extensions_free(scgi_exts *f) {
+static void scgi_extensions_free(scgi_exts *f) {
 	size_t i;
 
 	if (!f) return;
@@ -464,7 +466,7 @@ void scgi_extensions_free(scgi_exts *f) {
 	free(f);
 }
 
-int scgi_extension_insert(scgi_exts *ext, buffer *key, scgi_extension_host *fh) {
+static int scgi_extension_insert(scgi_exts *ext, buffer *key, scgi_extension_host *fh) {
 	scgi_extension *fe;
 	size_t i;
 
@@ -1178,7 +1180,7 @@ static int scgi_set_state(server *srv, handler_ctx *hctx, scgi_connection_state_
 }
 
 
-void scgi_connection_cleanup(server *srv, handler_ctx *hctx) {
+static void scgi_connection_cleanup(server *srv, handler_ctx *hctx) {
 	plugin_data *p;
 	connection  *con;
 
@@ -1281,10 +1283,11 @@ static int scgi_env_add(buffer *env, const char *key, size_t key_len, const char
 
 	buffer_prepare_append(env, len);
 
-	/* include the NUL */
-	memcpy(env->ptr + env->used, key, key_len + 1);
+	memcpy(env->ptr + env->used, key, key_len);
+	env->ptr[env->used + key_len] = '\0';
 	env->used += key_len + 1;
-	memcpy(env->ptr + env->used, val, val_len + 1);
+	memcpy(env->ptr + env->used, val, val_len);
+	env->ptr[env->used + val_len] = '\0';
 	env->used += val_len + 1;
 
 	return 0;
@@ -1461,10 +1464,18 @@ static int scgi_create_env(server *srv, handler_ctx *hctx) {
 	scgi_env_add(p->scgi_env, CONST_STR_LEN("SCGI"), CONST_STR_LEN("1"));
 
 
-	scgi_env_add(p->scgi_env, CONST_STR_LEN("SERVER_SOFTWARE"), CONST_STR_LEN(PACKAGE_NAME"/"PACKAGE_VERSION));
+	if (buffer_is_empty(con->conf.server_tag)) {
+		scgi_env_add(p->scgi_env, CONST_STR_LEN("SERVER_SOFTWARE"), CONST_STR_LEN(PACKAGE_DESC));
+	} else {
+		scgi_env_add(p->scgi_env, CONST_STR_LEN("SERVER_SOFTWARE"), CONST_BUF_LEN(con->conf.server_tag));
+	}
 
 	if (con->server_name->used) {
-		scgi_env_add(p->scgi_env, CONST_STR_LEN("SERVER_NAME"), CONST_BUF_LEN(con->server_name));
+		size_t len = con->server_name->used - 1;
+		char *colon = strchr(con->server_name->ptr, ':');
+		if (colon) len = colon - con->server_name->ptr;
+
+		scgi_env_add(p->scgi_env, CONST_STR_LEN("SERVER_NAME"), con->server_name->ptr, len);
 	} else {
 #ifdef HAVE_IPV6
 		s = inet_ntop(srv_sock->addr.plain.sa_family,
@@ -1915,7 +1926,7 @@ static int scgi_demux_response(server *srv, handler_ctx *hctx) {
 }
 
 
-int scgi_proclist_sort_up(server *srv, scgi_extension_host *host, scgi_proc *proc) {
+static int scgi_proclist_sort_up(server *srv, scgi_extension_host *host, scgi_proc *proc) {
 	scgi_proc *p;
 
 	UNUSED(srv);
@@ -2827,7 +2838,11 @@ static handler_t scgi_check_extension(server *srv, connection *con, void *p_d, i
 			 */
 
 			/* the rewrite is only done for /prefix/? matches */
-			if (extension->key->ptr[0] == '/' &&
+			if (host->fix_root_path_name && extension->key->ptr[0] == '/' && extension->key->ptr[1] == '\0') {
+				buffer_copy_string(con->request.pathinfo, con->uri.path->ptr);
+				con->uri.path->used = 1;
+				con->uri.path->ptr[con->uri.path->used - 1] = '\0';
+			} else if (extension->key->ptr[0] == '/' &&
 			    con->uri.path->used > extension->key->used &&
 			    NULL != (pathinfo = strchr(con->uri.path->ptr + extension->key->used - 1, '/'))) {
 				/* rewrite uri.path and pathinfo */
@@ -2835,10 +2850,6 @@ static handler_t scgi_check_extension(server *srv, connection *con, void *p_d, i
 				buffer_copy_string(con->request.pathinfo, pathinfo);
 
 				con->uri.path->used -= con->request.pathinfo->used - 1;
-				con->uri.path->ptr[con->uri.path->used - 1] = '\0';
-			} else if (host->fix_root_path_name && extension->key->ptr[0] == '/' && extension->key->ptr[1] == '\0') {
-				buffer_copy_string(con->request.pathinfo, con->uri.path->ptr);
-				con->uri.path->used = 1;
 				con->uri.path->ptr[con->uri.path->used - 1] = '\0';
 			}
 		}
@@ -3105,6 +3116,7 @@ TRIGGER_FUNC(mod_scgi_handle_trigger) {
 }
 
 
+int mod_scgi_plugin_init(plugin *p);
 int mod_scgi_plugin_init(plugin *p) {
 	p->version     = LIGHTTPD_VERSION_ID;
 	p->name         = buffer_init_string("scgi");

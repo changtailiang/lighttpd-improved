@@ -49,6 +49,8 @@
 #include <sys/wait.h>
 #endif
 
+#include "version.h"
+
 #define FCGI_ENV_ADD_CHECK(ret, con) \
 	if (ret == -1) { \
 		con->http_status = 400; \
@@ -316,12 +318,6 @@ typedef struct {
 } plugin_config;
 
 typedef struct {
-	size_t *ptr;
-	size_t used;
-	size_t size;
-} buffer_uint;
-
-typedef struct {
 	char **ptr;
 
 	size_t size;
@@ -331,7 +327,6 @@ typedef struct {
 /* generic plugin data, shared between all connections */
 typedef struct {
 	PLUGIN_DATA;
-	buffer_uint fcgi_request_id;
 
 	buffer *fcgi_env;
 
@@ -389,18 +384,63 @@ typedef struct {
 /* ok, we need a prototype */
 static handler_t fcgi_handle_fdevent(void *s, void *ctx, int revents);
 
-int fastcgi_status_copy_procname(buffer *b, fcgi_extension_host *host, fcgi_proc *proc) {
+static void fastcgi_status_copy_procname(buffer *b, fcgi_extension_host *host, fcgi_proc *proc) {
 	buffer_copy_string_len(b, CONST_STR_LEN("fastcgi.backend."));
 	buffer_append_string_buffer(b, host->id);
 	if (proc) {
 		buffer_append_string_len(b, CONST_STR_LEN("."));
 		buffer_append_long(b, proc->id);
 	}
-
-	return 0;
 }
 
-int fastcgi_status_init(server *srv, buffer *b, fcgi_extension_host *host, fcgi_proc *proc) {
+static void fcgi_proc_load_inc(server *srv, handler_ctx *hctx) {
+	plugin_data *p = hctx->plugin_data;
+	hctx->proc->load++;
+
+	status_counter_inc(srv, CONST_STR_LEN("fastcgi.active-requests"));
+
+	fastcgi_status_copy_procname(p->statuskey, hctx->host, hctx->proc);
+	buffer_append_string_len(p->statuskey, CONST_STR_LEN(".load"));
+
+	status_counter_set(srv, CONST_BUF_LEN(p->statuskey), hctx->proc->load);
+}
+
+static void fcgi_proc_load_dec(server *srv, handler_ctx *hctx) {
+	plugin_data *p = hctx->plugin_data;
+	hctx->proc->load--;
+
+	status_counter_dec(srv, CONST_STR_LEN("fastcgi.active-requests"));
+
+	fastcgi_status_copy_procname(p->statuskey, hctx->host, hctx->proc);
+	buffer_append_string_len(p->statuskey, CONST_STR_LEN(".load"));
+
+	status_counter_set(srv, CONST_BUF_LEN(p->statuskey), hctx->proc->load);
+}
+
+static void fcgi_host_assign(server *srv, handler_ctx *hctx, fcgi_extension_host *host) {
+	plugin_data *p = hctx->plugin_data;
+	hctx->host = host;
+	hctx->host->load++;
+
+	fastcgi_status_copy_procname(p->statuskey, hctx->host, NULL);
+	buffer_append_string_len(p->statuskey, CONST_STR_LEN(".load"));
+
+	status_counter_set(srv, CONST_BUF_LEN(p->statuskey), hctx->host->load);
+}
+
+static void fcgi_host_reset(server *srv, handler_ctx *hctx) {
+	plugin_data *p = hctx->plugin_data;
+	hctx->host->load--;
+
+	fastcgi_status_copy_procname(p->statuskey, hctx->host, NULL);
+	buffer_append_string_len(p->statuskey, CONST_STR_LEN(".load"));
+
+	status_counter_set(srv, CONST_BUF_LEN(p->statuskey), hctx->host->load);
+
+	hctx->host = NULL;
+}
+
+static int fastcgi_status_init(server *srv, buffer *b, fcgi_extension_host *host, fcgi_proc *proc) {
 #define CLEAN(x) \
 	fastcgi_status_copy_procname(b, host, proc); \
 	buffer_append_string_len(b, CONST_STR_LEN(x)); \
@@ -451,10 +491,9 @@ static handler_ctx * handler_ctx_init() {
 	return hctx;
 }
 
-static void handler_ctx_free(handler_ctx *hctx) {
+static void handler_ctx_free(server *srv, handler_ctx *hctx) {
 	if (hctx->host) {
-		hctx->host->load--;
-		hctx->host = NULL;
+		fcgi_host_reset(srv, hctx);
 	}
 
 	buffer_free(hctx->response_header);
@@ -465,7 +504,7 @@ static void handler_ctx_free(handler_ctx *hctx) {
 	free(hctx);
 }
 
-fcgi_proc *fastcgi_process_init() {
+static fcgi_proc *fastcgi_process_init() {
 	fcgi_proc *f;
 
 	f = calloc(1, sizeof(*f));
@@ -478,7 +517,7 @@ fcgi_proc *fastcgi_process_init() {
 	return f;
 }
 
-void fastcgi_process_free(fcgi_proc *f) {
+static void fastcgi_process_free(fcgi_proc *f) {
 	if (!f) return;
 
 	fastcgi_process_free(f->next);
@@ -489,7 +528,7 @@ void fastcgi_process_free(fcgi_proc *f) {
 	free(f);
 }
 
-fcgi_extension_host *fastcgi_host_init() {
+static fcgi_extension_host *fastcgi_host_init() {
 	fcgi_extension_host *f;
 
 	f = calloc(1, sizeof(*f));
@@ -506,7 +545,7 @@ fcgi_extension_host *fastcgi_host_init() {
 	return f;
 }
 
-void fastcgi_host_free(fcgi_extension_host *h) {
+static void fastcgi_host_free(fcgi_extension_host *h) {
 	if (!h) return;
 
 	buffer_free(h->id);
@@ -525,7 +564,7 @@ void fastcgi_host_free(fcgi_extension_host *h) {
 
 }
 
-fcgi_exts *fastcgi_extensions_init() {
+static fcgi_exts *fastcgi_extensions_init() {
 	fcgi_exts *f;
 
 	f = calloc(1, sizeof(*f));
@@ -533,7 +572,7 @@ fcgi_exts *fastcgi_extensions_init() {
 	return f;
 }
 
-void fastcgi_extensions_free(fcgi_exts *f) {
+static void fastcgi_extensions_free(fcgi_exts *f) {
 	size_t i;
 
 	if (!f) return;
@@ -563,7 +602,7 @@ void fastcgi_extensions_free(fcgi_exts *f) {
 	free(f);
 }
 
-int fastcgi_extension_insert(fcgi_exts *ext, buffer *key, fcgi_extension_host *fh) {
+static int fastcgi_extension_insert(fcgi_exts *ext, buffer *key, fcgi_extension_host *fh) {
 	fcgi_extension *fe;
 	size_t i;
 
@@ -633,11 +672,8 @@ INIT_FUNC(mod_fastcgi_init) {
 
 FREE_FUNC(mod_fastcgi_free) {
 	plugin_data *p = p_d;
-	buffer_uint *r = &(p->fcgi_request_id);
 
 	UNUSED(srv);
-
-	if (r->ptr) free(r->ptr);
 
 	buffer_free(p->fcgi_env);
 	buffer_free(p->path);
@@ -710,8 +746,8 @@ static int env_add(char_array *env, const char *key, size_t key_len, const char 
 	dst = malloc(key_len + val_len + 3);
 	memcpy(dst, key, key_len);
 	dst[key_len] = '=';
-	/* add the \0 from the value */
-	memcpy(dst + key_len + 1, val, val_len + 1);
+	memcpy(dst + key_len + 1, val, val_len);
+	dst[key_len + 1 + val_len] = '\0';
 
 	for (i = 0; i < env->used; i++) {
 		if (0 == strncmp(dst, env->ptr[i], key_len + 1)) {
@@ -1056,10 +1092,7 @@ static int fcgi_spawn_connection(server *srv,
 							"child exited with status",
 							WEXITSTATUS(status), host->bin_path);
 					log_error_write(srv, __FILE__, __LINE__, "s",
-							"If you're trying to run PHP as a FastCGI backend, make sure you're using the FastCGI-enabled version.\n"
-							"You can find out if it is the right one by executing 'php -v' and it should display '(cgi-fcgi)' "
-							"in the output, NOT '(cgi)' NOR '(cli)'.\n"
-							"For more information, check http://trac.lighttpd.net/trac/wiki/Docs%3AModFastCGI#preparing-php-as-a-fastcgi-program"
+							"If you're trying to run your app as a FastCGI backend, make sure you're using the FastCGI-enabled version.\n"
 							"If this is PHP on Gentoo, add 'fastcgi' to the USE flags.");
 				} else if (WIFSIGNALED(status)) {
 					log_error_write(srv, __FILE__, __LINE__, "sd",
@@ -1434,52 +1467,7 @@ static int fcgi_set_state(server *srv, handler_ctx *hctx, fcgi_connection_state_
 }
 
 
-static size_t fcgi_requestid_new(server *srv, plugin_data *p) {
-	size_t m = 0;
-	size_t i;
-	buffer_uint *r = &(p->fcgi_request_id);
-
-	UNUSED(srv);
-
-	for (i = 0; i < r->used; i++) {
-		if (r->ptr[i] > m) m = r->ptr[i];
-	}
-
-	if (r->size == 0) {
-		r->size = 16;
-		r->ptr = malloc(sizeof(*r->ptr) * r->size);
-	} else if (r->used == r->size) {
-		r->size += 16;
-		r->ptr = realloc(r->ptr, sizeof(*r->ptr) * r->size);
-	}
-
-	r->ptr[r->used++] = ++m;
-
-	return m;
-}
-
-static int fcgi_requestid_del(server *srv, plugin_data *p, size_t request_id) {
-	size_t i;
-	buffer_uint *r = &(p->fcgi_request_id);
-
-	UNUSED(srv);
-
-	for (i = 0; i < r->used; i++) {
-		if (r->ptr[i] == request_id) break;
-	}
-
-	if (i != r->used) {
-		/* found */
-
-		if (i != r->used - 1) {
-			r->ptr[i] = r->ptr[r->used - 1];
-		}
-		r->used--;
-	}
-
-	return 0;
-}
-void fcgi_connection_close(server *srv, handler_ctx *hctx) {
+static void fcgi_connection_close(server *srv, handler_ctx *hctx) {
 	plugin_data *p;
 	connection  *con;
 
@@ -1495,21 +1483,10 @@ void fcgi_connection_close(server *srv, handler_ctx *hctx) {
 		srv->cur_fds--;
 	}
 
-	if (hctx->request_id != 0) {
-		fcgi_requestid_del(srv, p, hctx->request_id);
-	}
-
 	if (hctx->host && hctx->proc) {
 		if (hctx->got_proc) {
 			/* after the connect the process gets a load */
-			hctx->proc->load--;
-
-			status_counter_dec(srv, CONST_STR_LEN("fastcgi.active-requests"));
-
-			fastcgi_status_copy_procname(p->statuskey, hctx->host, hctx->proc);
-			buffer_append_string_len(p->statuskey, CONST_STR_LEN(".load"));
-
-			status_counter_set(srv, CONST_BUF_LEN(p->statuskey), hctx->proc->load);
+			fcgi_proc_load_dec(srv, hctx);
 
 			if (p->conf.debug) {
 				log_error_write(srv, __FILE__, __LINE__, "ssdsbsd",
@@ -1522,7 +1499,7 @@ void fcgi_connection_close(server *srv, handler_ctx *hctx) {
 	}
 
 
-	handler_ctx_free(hctx);
+	handler_ctx_free(srv, hctx);
 	con->plugin_ctx[p->id] = NULL;
 }
 
@@ -1556,8 +1533,6 @@ static int fcgi_reconnect(server *srv, handler_ctx *hctx) {
 		hctx->fd = -1;
 	}
 
-	fcgi_requestid_del(srv, p, hctx->request_id);
-
 	fcgi_set_state(srv, hctx, FCGI_STATE_INIT);
 
 	hctx->request_id = 0;
@@ -1576,12 +1551,11 @@ static int fcgi_reconnect(server *srv, handler_ctx *hctx) {
 	}
 
 	if (hctx->proc && hctx->got_proc) {
-		hctx->proc->load--;
+		fcgi_proc_load_dec(srv, hctx);
 	}
 
 	/* perhaps another host gives us more luck */
-	hctx->host->load--;
-	hctx->host = NULL;
+	fcgi_host_reset(srv, hctx);
 
 	return 0;
 }
@@ -1885,10 +1859,18 @@ static int fcgi_create_env(server *srv, handler_ctx *hctx, size_t request_id) {
 	buffer_prepare_copy(p->fcgi_env, 1024);
 
 
-	FCGI_ENV_ADD_CHECK(fcgi_env_add(p->fcgi_env, CONST_STR_LEN("SERVER_SOFTWARE"), CONST_STR_LEN(PACKAGE_NAME"/"PACKAGE_VERSION)),con)
+	if (buffer_is_empty(con->conf.server_tag)) {
+		FCGI_ENV_ADD_CHECK(fcgi_env_add(p->fcgi_env, CONST_STR_LEN("SERVER_SOFTWARE"), CONST_STR_LEN(PACKAGE_DESC)),con)
+	} else {
+		FCGI_ENV_ADD_CHECK(fcgi_env_add(p->fcgi_env, CONST_STR_LEN("SERVER_SOFTWARE"), CONST_BUF_LEN(con->conf.server_tag)),con)
+	}
 
 	if (con->server_name->used) {
-		FCGI_ENV_ADD_CHECK(fcgi_env_add(p->fcgi_env, CONST_STR_LEN("SERVER_NAME"), CONST_BUF_LEN(con->server_name)),con)
+		size_t len = con->server_name->used - 1;
+		char *colon = strchr(con->server_name->ptr, ':');
+		if (colon) len = colon - con->server_name->ptr;
+
+		FCGI_ENV_ADD_CHECK(fcgi_env_add(p->fcgi_env, CONST_STR_LEN("SERVER_NAME"), con->server_name->ptr, len),con)
 	} else {
 #ifdef HAVE_IPV6
 		s = inet_ntop(srv_sock->addr.plain.sa_family,
@@ -2060,7 +2042,7 @@ static int fcgi_create_env(server *srv, handler_ctx *hctx, size_t request_id) {
 
 			fcgi_env_add(p->fcgi_env, CONST_STR_LEN("REQUEST_URI"),
 					con->request.orig_uri->ptr + (host->strip_request_uri->used - 2),
-					con->request.orig_uri->used - (host->strip_request_uri->used - 2));
+					con->request.orig_uri->used - (host->strip_request_uri->used - 2) - 1);
 		} else {
 			FCGI_ENV_ADD_CHECK(fcgi_env_add(p->fcgi_env, CONST_STR_LEN("REQUEST_URI"), CONST_BUF_LEN(con->request.orig_uri)),con)
 		}
@@ -2361,10 +2343,15 @@ static int fastcgi_get_packet(server *srv, handler_ctx *hctx, fastcgi_response_p
 
 	/* get at least the FastCGI header */
 	for (c = hctx->rb->first; c; c = c->next) {
+		size_t weWant = sizeof(*header) - (packet->b->used - 1);
+		size_t weHave = c->mem->used - c->offset - 1;
+
+		if (weHave > weWant) weHave = weWant;
+
 		if (packet->b->used == 0) {
-			buffer_copy_string_len(packet->b, c->mem->ptr + c->offset, c->mem->used - c->offset - 1);
+			buffer_copy_string_len(packet->b, c->mem->ptr + c->offset, weHave);
 		} else {
-			buffer_append_string_len(packet->b, c->mem->ptr + c->offset, c->mem->used - c->offset - 1);
+			buffer_append_string_len(packet->b, c->mem->ptr + c->offset, weHave);
 		}
 
 		if (packet->b->used >= sizeof(*header) + 1) break;
@@ -2577,7 +2564,7 @@ static int fcgi_demux_response(server *srv, handler_ctx *hctx) {
 						joblist_append(srv, con);
 
 						buffer_copy_string_len(dcls->key, "Content-Length", sizeof("Content-Length")-1);
-						buffer_copy_long(dcls->value, sce->st.st_size);
+						buffer_copy_off_t(dcls->value, sce->st.st_size);
 						dcls = (data_string*) array_replace(con->response.headers, (data_unset *)dcls);
 						if (dcls) dcls->free((data_unset*)dcls);
 
@@ -2977,29 +2964,16 @@ static handler_t fcgi_write_request(server *srv, handler_ctx *hctx) {
 	case FCGI_STATE_PREPARE_WRITE:
 		/* ok, we have the connection */
 
-		hctx->proc->load++;
+		fcgi_proc_load_inc(srv, hctx);
 		hctx->proc->last_used = srv->cur_ts;
 		hctx->got_proc = 1;
 
 		status_counter_inc(srv, CONST_STR_LEN("fastcgi.requests"));
-		status_counter_inc(srv, CONST_STR_LEN("fastcgi.active-requests"));
 
 		fastcgi_status_copy_procname(p->statuskey, hctx->host, hctx->proc);
 		buffer_append_string_len(p->statuskey, CONST_STR_LEN(".connected"));
 
 		status_counter_inc(srv, CONST_BUF_LEN(p->statuskey));
-
-		/* the proc-load */
-		fastcgi_status_copy_procname(p->statuskey, hctx->host, hctx->proc);
-		buffer_append_string_len(p->statuskey, CONST_STR_LEN(".load"));
-
-		status_counter_set(srv, CONST_BUF_LEN(p->statuskey), hctx->proc->load);
-
-		/* the host-load */
-		fastcgi_status_copy_procname(p->statuskey, hctx->host, NULL);
-		buffer_append_string_len(p->statuskey, CONST_STR_LEN(".load"));
-
-		status_counter_set(srv, CONST_BUF_LEN(p->statuskey), hctx->host->load);
 
 		if (p->conf.debug) {
 			log_error_write(srv, __FILE__, __LINE__, "ssdsbsd",
@@ -3011,7 +2985,7 @@ static handler_t fcgi_write_request(server *srv, handler_ctx *hctx) {
 
 		/* move the proc-list entry down the list */
 		if (hctx->request_id == 0) {
-			hctx->request_id = fcgi_requestid_new(srv, p);
+			hctx->request_id = 1; /* always use id 1 as we don't use multiplexing */
 		} else {
 			log_error_write(srv, __FILE__, __LINE__, "sd",
 					"fcgi-request is already in use:", hctx->request_id);
@@ -3157,12 +3131,11 @@ SUBREQUEST_FUNC(mod_fastcgi_handle_subrequest) {
 		 */
 
 		/* init handler-context */
-		hctx->host = host;
 
 		/* we put a connection on this host, move the other new connections to other hosts
 		 *
 		 * as soon as hctx->host is unassigned, decrease the load again */
-		hctx->host->load++;
+		fcgi_host_assign(srv, hctx, host);
 		hctx->proc = NULL;
 	} else {
 		host = hctx->host;
@@ -3391,14 +3364,10 @@ static handler_t fcgi_handle_fdevent(void *s, void *ctx, int revents) {
 			 * even if the FCGI_FIN packet is not received yet
 			 */
 		} else {
-			log_error_write(srv, __FILE__, __LINE__, "sbSBSDSd",
+			log_error_write(srv, __FILE__, __LINE__, "sbsbsd",
 					"error: unexpected close of fastcgi connection for",
 					con->uri.path,
-					"(no fastcgi process on host:",
-					host->host,
-					", port: ",
-					host->port,
-					" ?)",
+					"(no fastcgi process on socket:", proc->connection_name, "?)",
 					hctx->state);
 
 			connection_set_state(srv, con, CON_STATE_ERROR);
@@ -3639,7 +3608,11 @@ static handler_t fcgi_check_extension(server *srv, connection *con, void *p_d, i
 				*/
 
 				/* the rewrite is only done for /prefix/? matches */
-				if (extension->key->ptr[0] == '/' &&
+				if (host->fix_root_path_name && extension->key->ptr[0] == '/' && extension->key->ptr[1] == '\0') {
+					buffer_copy_string(con->request.pathinfo, con->uri.path->ptr);
+					con->uri.path->used = 1;
+					con->uri.path->ptr[con->uri.path->used - 1] = '\0';
+				} else if (extension->key->ptr[0] == '/' &&
 					con->uri.path->used > extension->key->used &&
 					NULL != (pathinfo = strchr(con->uri.path->ptr + extension->key->used - 1, '/'))) {
 					/* rewrite uri.path and pathinfo */
@@ -3647,10 +3620,6 @@ static handler_t fcgi_check_extension(server *srv, connection *con, void *p_d, i
 					buffer_copy_string(con->request.pathinfo, pathinfo);
 
 					con->uri.path->used -= con->request.pathinfo->used - 1;
-					con->uri.path->ptr[con->uri.path->used - 1] = '\0';
-				} else if (host->fix_root_path_name && extension->key->ptr[0] == '/' && extension->key->ptr[1] == '\0') {
-					buffer_copy_string(con->request.pathinfo, con->uri.path->ptr);
-					con->uri.path->used = 1;
 					con->uri.path->ptr[con->uri.path->used - 1] = '\0';
 				}
 			}
@@ -3916,6 +3885,7 @@ TRIGGER_FUNC(mod_fastcgi_handle_trigger) {
 }
 
 
+int mod_fastcgi_plugin_init(plugin *p);
 int mod_fastcgi_plugin_init(plugin *p) {
 	p->version      = LIGHTTPD_VERSION_ID;
 	p->name         = buffer_init_string("fastcgi");

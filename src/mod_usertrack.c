@@ -229,6 +229,7 @@ URIHANDLER_FUNC(mod_usertrack_uri_handler) {
 	/* we assume sizeof(time_t) == 4 here, but if not it ain't a problem at all */
 	LI_ltostr(hh, srv->cur_ts);
 	MD5_Update(&Md5Ctx, (unsigned char *)hh, strlen(hh));
+	MD5_Update(&Md5Ctx, (unsigned char *)srv->entropy, sizeof(srv->entropy));
 	LI_ltostr(hh, rand());
 	MD5_Update(&Md5Ctx, (unsigned char *)hh, strlen(hh));
 
@@ -255,6 +256,7 @@ URIHANDLER_FUNC(mod_usertrack_uri_handler) {
 
 /* this function is called at dlopen() time and inits the callbacks */
 
+int mod_usertrack_plugin_init(plugin *p);
 int mod_usertrack_plugin_init(plugin *p) {
 	p->version     = LIGHTTPD_VERSION_ID;
 	p->name        = buffer_init_string("usertrack");

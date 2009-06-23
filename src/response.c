@@ -25,6 +25,7 @@
 #include "plugin.h"
 
 #include "sys-socket.h"
+#include "version.h"
 
 int http_response_write_header(server *srv, connection *con) {
 	buffer *b;
@@ -42,6 +43,11 @@ int http_response_write_header(server *srv, connection *con) {
 	buffer_append_long(b, con->http_status);
 	buffer_append_string_len(b, CONST_STR_LEN(" "));
 	buffer_append_string(b, get_http_status_name(con->http_status));
+
+	/* disable keep-alive if requested */
+	if (con->request_count > con->conf.max_keep_alive_requests) {
+		con->keep_alive = 0;
+	}
 
 	if (con->request.http_version != HTTP_VERSION_1_1 || con->keep_alive == 0) {
 		if (con->keep_alive) {
@@ -114,7 +120,7 @@ int http_response_write_header(server *srv, connection *con) {
 
 	if (!have_server) {
 		if (buffer_is_empty(con->conf.server_tag)) {
-			buffer_append_string_len(b, CONST_STR_LEN("\r\nServer: " PACKAGE_NAME "/" PACKAGE_VERSION));
+			buffer_append_string_len(b, CONST_STR_LEN("\r\nServer: " PACKAGE_DESC));
 		} else if (con->conf.server_tag->used > 1) {
 			buffer_append_string_len(b, CONST_STR_LEN("\r\nServer: "));
 			buffer_append_string_encoded(b, CONST_BUF_LEN(con->conf.server_tag), ENCODING_HTTP_HEADER);
@@ -234,12 +240,6 @@ handler_t http_response_prepare(server *srv, connection *con) {
 			log_error_write(srv, __FILE__, __LINE__,  "sb", "URI-authority: ", con->uri.authority);
 			log_error_write(srv, __FILE__, __LINE__,  "sb", "URI-path     : ", con->uri.path_raw);
 			log_error_write(srv, __FILE__, __LINE__,  "sb", "URI-query    : ", con->uri.query);
-		}
-
-		/* disable keep-alive if requested */
-
-		if (con->request_count > con->conf.max_keep_alive_requests) {
-			con->keep_alive = 0;
 		}
 
 

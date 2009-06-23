@@ -183,11 +183,15 @@ typedef struct {
 } response;
 
 typedef struct {
-	buffer *scheme;
+	buffer *scheme; /* scheme without colon or slashes ( "http" or "https" ) */
+
+	/* authority with optional portnumber ("site.name" or "site.name:8080" ) NOTE: without "username:password@" */
 	buffer *authority;
+
+	/* path including leading slash ("/" or "/index.html") - urldecoded, and sanitized  ( buffer_path_simplify() && buffer_urldecode_path() ) */
 	buffer *path;
-	buffer *path_raw;
-	buffer *query;
+	buffer *path_raw; /* raw path, as sent from client. no urldecoding or path simplifying */
+	buffer *query; /* querystring ( everything after "?", ie: in "/index.php?foo=1", query is "foo=1" ) */
 } request_uri;
 
 typedef struct {
@@ -270,6 +274,7 @@ typedef struct {
 	unsigned short ssl_use_sslv2;
 
 	unsigned short use_ipv6;
+	unsigned short defer_accept;
 	unsigned short is_ssl;
 	unsigned short allow_http11;
 	unsigned short etag_use_inode;
@@ -547,7 +552,7 @@ typedef struct server {
 
 	/* the errorlog */
 	int errorlog_fd;
-	enum { ERRORLOG_STDERR, ERRORLOG_FILE, ERRORLOG_SYSLOG } errorlog_mode;
+	enum { ERRORLOG_STDERR, ERRORLOG_FILE, ERRORLOG_SYSLOG, ERRORLOG_PIPE } errorlog_mode;
 	buffer *errorlog_buf;
 
 	fdevents *ev, *ev_ins;
@@ -595,6 +600,9 @@ typedef struct server {
 	time_t last_generated_date_ts;
 	time_t last_generated_debug_ts;
 	time_t startup_ts;
+
+	char entropy[8]; /* from /dev/[u]random if possible, otherwise rand() */
+	char is_real_entropy; /* whether entropy is from /dev/[u]random */
 
 	buffer *ts_debug_str;
 	buffer *ts_date_str;

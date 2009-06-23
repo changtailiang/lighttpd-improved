@@ -9,14 +9,35 @@ lemon_SOURCES=lemon.c
 
 lighttpd_angel_SOURCES=lighttpd-angel.c
 
-#simple_fcgi_SOURCES=simple-fcgi.c
-#simple_fcgi_LDADD=-lfcgi
+.PHONY: versionstamp parsers
+
+versionstamp:
+	@test -f versionstamp.h || touch versionstamp.h; \
+	REVISION=""; \
+	if test -x "`which svnversion`"; then \
+		REVISION="$$(LANG=C svnversion "$(top_srcdir)" 2>/dev/null || echo exported)"; \
+		if test "$$REVISION" = "exported"; then \
+			REVISION=""; \
+		fi; \
+	fi; \
+	if test -z "$$REVISION" -a -x "`which git`"; then \
+		REVISION="$$(cd "$(top_srcdir)"; LANG=C git describe --always 2>/dev/null || echo)"; \
+	fi; \
+	if test -n "$$REVISION"; then \
+		echo "#define REPO_VERSION \"-devel-$$REVISION\"" > versionstamp.h.tmp; \
+	else \
+		echo "#define REPO_VERSION \"\"" > versionstamp.h.tmp; \
+	fi; \
+	if ! diff versionstamp.h.tmp versionstamp.h >/dev/null 2>/dev/null; then \
+		mv versionstamp.h.tmp versionstamp.h; \
+	else \
+		rm versionstamp.h.tmp; \
+	fi
 
 if CROSS_COMPILING
 configparser.c configparser.h:
 mod_ssi_exprparser.c mod_ssi_exprparser.h:
 
-.PHONY: parsers
 parsers:
 else
 configparser.h: configparser.c
@@ -29,12 +50,12 @@ mod_ssi_exprparser.c: $(srcdir)/mod_ssi_exprparser.y $(srcdir)/lempar.c lemon$(E
 	rm -f mod_ssi_exprparser.h
 	$(LEMON) -q $(srcdir)/mod_ssi_exprparser.y $(srcdir)/lempar.c
 
-.PHONY: parsers
 parsers: configparser.c mod_ssi_exprparser.c
 endif
 
-BUILT_SOURCES = parsers
+BUILT_SOURCES = parsers versionstamp
 MAINTAINERCLEANFILES = configparser.c configparser.h mod_ssi_exprparser.c mod_ssi_exprparser.h
+CLEANFILES = versionstamp.h versionstamp.h.tmp
 
 common_src=buffer.c log.c \
       keyvalue.c chunk.c  \
@@ -268,9 +289,10 @@ hdr = server.h buffer.h network.h log.h keyvalue.h \
       configparser.h mod_ssi_exprparser.h \
       sys-mmap.h sys-socket.h \
       splaytree.h proc_open.h status_counter.h \
-      mod_magnet_cache.h
+      mod_magnet_cache.h \
+      version.h
 
-DEFS= @DEFS@ -DLIBRARY_DIR="\"$(libdir)\"" -DSBIN_DIR="\"$(sbindir)\""
+DEFS= @DEFS@ -DHAVE_VERSION_H -DLIBRARY_DIR="\"$(libdir)\"" -DSBIN_DIR="\"$(sbindir)\""
 
 lighttpd_SOURCES = $(src)
 lighttpd_LDADD = $(PCRE_LIB) $(DL_LIB) $(SENDFILE_LIB) $(ATTR_LIB) $(common_libadd) $(SSL_LIB) $(FAM_LIBS)

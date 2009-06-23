@@ -376,7 +376,7 @@ void proxy_connection_reset(server *srv, handler_ctx *hctx) {
 	chunkqueue_reset(hctx->wb);
 }
 
-void proxy_connection_close(server *srv, handler_ctx *hctx) {
+static void proxy_connection_close(server *srv, handler_ctx *hctx) {
 	plugin_data *p;
 	connection *con;
 	
@@ -429,20 +429,35 @@ void proxy_retry_request(server *srv, handler_ctx *hctx) {
 static int proxy_establish_connection(server *srv, handler_ctx *hctx) {
 	struct sockaddr *proxy_addr;
 	struct sockaddr_in proxy_addr_in;
+#if defined(HAVE_IPV6) && defined(HAVE_INET_PTON)
+	struct sockaddr_in6 proxy_addr_in6;
+#endif
 	socklen_t servlen;
 
 	plugin_data *p    = hctx->plugin_data;
 	data_proxy *host= hctx->host;
 	int proxy_fd       = hctx->fd;
 
-	memset(&proxy_addr, 0, sizeof(proxy_addr));
 
-	proxy_addr_in.sin_family = AF_INET;
-	proxy_addr_in.sin_addr.s_addr = inet_addr(host->host->ptr);
-	proxy_addr_in.sin_port = htons(host->port);
-	servlen = sizeof(proxy_addr_in);
+#if defined(HAVE_IPV6) && defined(HAVE_INET_PTON)
+	if (strstr(host->host->ptr, ":")) {
+		memset(&proxy_addr_in6, 0, sizeof(proxy_addr_in6));
+		proxy_addr_in6.sin6_family = AF_INET6;
+		inet_pton(AF_INET6, host->host->ptr, (char *) &proxy_addr_in6.sin6_addr);
+		proxy_addr_in6.sin6_port = htons(host->port);
+		servlen = sizeof(proxy_addr_in6);
+		proxy_addr = (struct sockaddr *) &proxy_addr_in6;
+	} else
+#endif
+	{
+		memset(&proxy_addr_in, 0, sizeof(proxy_addr_in));
+		proxy_addr_in.sin_family = AF_INET;
+		proxy_addr_in.sin_addr.s_addr = inet_addr(host->host->ptr);
+		proxy_addr_in.sin_port = htons(host->port);
+		servlen = sizeof(proxy_addr_in);
+		proxy_addr = (struct sockaddr *) &proxy_addr_in;
+	}
 
-	proxy_addr = (struct sockaddr *) &proxy_addr_in;
 
 	if (-1 == connect(proxy_fd, proxy_addr, servlen)) {
 		if (errno == EINPROGRESS || errno == EALREADY) {
@@ -621,7 +636,7 @@ static handler_t proxy_find_host(server *srv, handler_ctx *hctx) {
 	return HANDLER_GO_ON;
 }
 
-void proxy_set_header(connection *con, const char *key, const char *value) {
+static void proxy_set_header(connection *con, const char *key, const char *value) {
     data_string *ds_dst;
 
     if (NULL == (ds_dst = (data_string *)array_get_unused_element(con->request.headers, TYPE_STRING))) {
@@ -633,7 +648,7 @@ void proxy_set_header(connection *con, const char *key, const char *value) {
     array_insert_unique(con->request.headers, (data_unset *)ds_dst);
 }
 
-void proxy_append_header(connection *con, const char *key, const char *value) {
+static void proxy_append_header(connection *con, const char *key, const char *value) {
     data_string *ds_dst;
 
     if (NULL == (ds_dst = (data_string *)array_get_unused_element(con->request.headers, TYPE_STRING))) {
@@ -1000,9 +1015,16 @@ static handler_t proxy_write_request(server *srv, handler_ctx *hctx) {
 
 	switch(hctx->state) {
 	case PROXY_STATE_INIT:
-		if (-1 == (hctx->fd = socket(AF_INET, SOCK_STREAM, 0))) {
+		if (strstr(host->host->ptr,":")) {
+		    if (-1 == (hctx->fd = socket(AF_INET6, SOCK_STREAM, 0))) {
 			log_error_write(srv, __FILE__, __LINE__, "ss", "socket failed: ", strerror(errno));
 			return HANDLER_ERROR;
+		    }
+		} else {
+		    if (-1 == (hctx->fd = socket(AF_INET, SOCK_STREAM, 0))) {
+			log_error_write(srv, __FILE__, __LINE__, "ss", "socket failed: ", strerror(errno));
+			return HANDLER_ERROR;
+		    }
 		}
 		hctx->fde_ndx = -1;
 
@@ -1389,10 +1411,10 @@ static handler_t mod_proxy_check_extension(server *srv, connection *con, void *p
 		con->plugin_ctx[p->id] = hctx;
 	}
 
-		hctx->remote_conn      = con;
-		hctx->plugin_data      = p;
+	hctx->remote_conn = con;
+	hctx->plugin_data = p;
 	hctx->extension = extension;
-		con->mode = p->id;
+	con->mode = p->id;
 
 	con->write_cache_file = 1;
 
@@ -1449,6 +1471,7 @@ TRIGGER_FUNC(mod_proxy_trigger) {
 }
 
 
+int mod_proxy_plugin_init(plugin *p);
 int mod_proxy_plugin_init(plugin *p) {
 	p->version      = LIGHTTPD_VERSION_ID;
 	p->name         = buffer_init_string("proxy");

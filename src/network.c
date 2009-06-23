@@ -26,7 +26,7 @@
 # include <openssl/rand.h>
 #endif
 
-handler_t network_server_handle_fdevent(void *s, void *context, int revents) {
+static handler_t network_server_handle_fdevent(void *s, void *context, int revents) {
 	server     *srv = (server *)s;
 	server_socket *srv_socket = (server_socket *)context;
 	connection *con;
@@ -62,7 +62,7 @@ handler_t network_server_handle_fdevent(void *s, void *context, int revents) {
 	return HANDLER_GO_ON;
 }
 
-int network_server_init(server *srv, buffer *host_token, specific_config *s) {
+static int network_server_init(server *srv, buffer *host_token, specific_config *s) {
 	int val;
 	socklen_t addr_len;
 	server_socket *srv_socket;
@@ -72,10 +72,6 @@ int network_server_init(server *srv, buffer *host_token, specific_config *s) {
 	buffer *b;
 	int is_unix_domain_socket = 0;
 	int fd;
-
-#ifdef SO_ACCEPTFILTER
-	struct accept_filter_arg afa;
-#endif
 
 #ifdef __WIN32
 	WORD wVersionRequested;
@@ -396,12 +392,17 @@ int network_server_init(server *srv, buffer *host_token, specific_config *s) {
 
 		return -1;
 #endif
+#ifdef TCP_DEFER_ACCEPT
+	} else if (s->defer_accept) {
+		int v = s->defer_accept;
+		if (-1 == setsockopt(srv_socket->fd, IPPROTO_TCP, TCP_DEFER_ACCEPT, &v, sizeof(v))) {
+			log_error_write(srv, __FILE__, __LINE__, "ss", "can't set TCP_DEFER_ACCEPT: ", strerror(errno));
+		}
+#endif
 	} else {
 #ifdef SO_ACCEPTFILTER
-		/*
-		 * FreeBSD accf_http filter
-		 *
-		 */
+		/* FreeBSD accf_http filter */
+		struct accept_filter_arg afa;
 		memset(&afa, 0, sizeof(afa));
 		strcpy(afa.af_name, "httpready");
 		if (setsockopt(srv_socket->fd, SOL_SOCKET, SO_ACCEPTFILTER, &afa, sizeof(afa)) < 0) {

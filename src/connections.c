@@ -199,7 +199,7 @@ static void dump_packet(const unsigned char *data, size_t len) {
 
 static int connection_handle_read_ssl(server *srv, connection *con) {
 #ifdef USE_OPENSSL
-	int r, ssl_err, len;
+	int r, ssl_err, len, count = 0;
 	buffer *b = NULL;
 
 	if (!con->conf.is_ssl) return -1;
@@ -228,13 +228,15 @@ static int connection_handle_read_ssl(server *srv, connection *con) {
 		       	/* we move the buffer to the chunk-queue, no need to free it */
 
 			chunkqueue_append_buffer_weak(con->read_queue, b);
+			count += len;
 			con->bytes_read += len;
 			b = NULL;
 		}
-	} while (len > 0);
+	} while (len > 0 && count < MAX_READ_LIMIT);
 
 
 	if (len < 0) {
+		int oerrno = errno;
 		switch ((r = SSL_get_error(con->ssl, len))) {
 		case SSL_ERROR_WANT_READ:
 		case SSL_ERROR_WANT_WRITE:
@@ -264,11 +266,11 @@ static int connection_handle_read_ssl(server *srv, connection *con) {
 						r, ERR_error_string(ssl_err, NULL));
 			}
 
-			switch(errno) {
+			switch(oerrno) {
 			default:
 				log_error_write(srv, __FILE__, __LINE__, "sddds", "SSL:",
-						len, r, errno,
-						strerror(errno));
+						len, r, oerrno,
+						strerror(oerrno));
 				break;
 			}
 
@@ -341,6 +343,7 @@ static int connection_handle_read(server *srv, connection *con) {
 		b = chunkqueue_get_append_buffer(con->read_queue);
 		buffer_prepare_copy(b, 4 * 1024);
 	} else {
+		if (toread > MAX_READ_LIMIT) toread = MAX_READ_LIMIT;
 		b = chunkqueue_get_append_buffer(con->read_queue);
 		buffer_prepare_copy(b, toread + 1);
 	}
@@ -936,7 +939,7 @@ int connection_reset(server *srv, connection *con) {
  *
  * we get called by the state-engine and by the fdevent-handler
  */
-int connection_handle_read_state(server *srv, connection *con)  {
+static int connection_handle_read_state(server *srv, connection *con)  {
 	connection_state_t ostate = con->state;
 	chunk *c, *last_chunk;
 	off_t last_offset;
@@ -1234,7 +1237,7 @@ int connection_handle_read_state(server *srv, connection *con)  {
 	return 0;
 }
 
-handler_t connection_handle_fdevent(void *s, void *context, int revents) {
+static handler_t connection_handle_fdevent(void *s, void *context, int revents) {
 	server     *srv = (server *)s;
 	connection *con = context;
 
@@ -1258,7 +1261,7 @@ handler_t connection_handle_fdevent(void *s, void *context, int revents) {
 		/* FIXME: revents = 0x19 still means that we should read from the queue */
 		if (revents & FDEVENT_HUP) {
 			if (con->state == CON_STATE_CLOSE) {
-				con->close_timeout_ts = 0;
+				con->close_timeout_ts = srv->cur_ts - 2;
 			} else {
 				/* sigio reports the wrong event here
 				 *
@@ -1326,7 +1329,7 @@ handler_t connection_handle_fdevent(void *s, void *context, int revents) {
 		} else {
 			/* nothing to read */
 
-			con->close_timeout_ts = 0;
+			con->close_timeout_ts = srv->cur_ts - 2;
 		}
 	}
 
@@ -1678,10 +1681,10 @@ int connection_state_machine(server *srv, connection *con) {
 				} else {
 					/* nothing to read */
 
-					con->close_timeout_ts = 0;
+					con->close_timeout_ts = srv->cur_ts - 2;
 				}
 			} else {
-				con->close_timeout_ts = 0;
+				con->close_timeout_ts = srv->cur_ts - 2;
 			}
 
 			if (srv->cur_ts - con->close_timeout_ts > 1) {

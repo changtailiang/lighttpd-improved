@@ -139,7 +139,8 @@ mod_auth_la_OBJECTS = $(am_mod_auth_la_OBJECTS)
 mod_auth_la_LINK = $(LIBTOOL) --tag=CC $(AM_LIBTOOLFLAGS) \
 	$(LIBTOOLFLAGS) --mode=link $(CCLD) $(AM_CFLAGS) $(CFLAGS) \
 	$(mod_auth_la_LDFLAGS) $(LDFLAGS) -o $@
-mod_cache_la_DEPENDENCIES = $(am__DEPENDENCIES_2)
+mod_cache_la_DEPENDENCIES = $(am__DEPENDENCIES_1) \
+	$(am__DEPENDENCIES_2)
 am_mod_cache_la_OBJECTS = mod_cache.lo
 mod_cache_la_OBJECTS = $(am_mod_cache_la_OBJECTS)
 mod_cache_la_LINK = $(LIBTOOL) --tag=CC $(AM_LIBTOOLFLAGS) \
@@ -222,7 +223,7 @@ mod_mem_cache_la_LINK = $(LIBTOOL) --tag=CC $(AM_LIBTOOLFLAGS) \
 	$(LIBTOOLFLAGS) --mode=link $(CCLD) $(AM_CFLAGS) $(CFLAGS) \
 	$(mod_mem_cache_la_LDFLAGS) $(LDFLAGS) -o $@
 mod_mem_compress_la_DEPENDENCIES = $(am__DEPENDENCIES_1) \
-	$(am__DEPENDENCIES_1) $(am__DEPENDENCIES_2)
+	$(am__DEPENDENCIES_2)
 am_mod_mem_compress_la_OBJECTS = mod_mem_compress.lo
 mod_mem_compress_la_OBJECTS = $(am_mod_mem_compress_la_OBJECTS)
 mod_mem_compress_la_LINK = $(LIBTOOL) --tag=CC $(AM_LIBTOOLFLAGS) \
@@ -409,12 +410,33 @@ LINK = $(LIBTOOL) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) \
 SOURCES = $(liblightcomp_la_SOURCES) $(mod_access_la_SOURCES) \
 	$(mod_accesslog_la_SOURCES) $(mod_alias_la_SOURCES) \
 	$(mod_auth_la_SOURCES) $(mod_cache_la_SOURCES) \
-	$(mod_cgi_la_SOURCES) $(mod_mem_cache_la_SOURCES) $(mod_mem_compress_la_SOURCES) \
+	$(mod_cgi_la_SOURCES) $(mod_compress_la_SOURCES) \
+	$(mod_dirlisting_la_SOURCES) $(mod_evasive_la_SOURCES) \
+	$(mod_evhost_la_SOURCES) $(mod_expire_la_SOURCES) \
+	$(mod_extforward_la_SOURCES) $(mod_fastcgi_la_SOURCES) \
+	$(mod_flv_streaming_la_SOURCES) $(mod_indexfile_la_SOURCES) \
+	$(mod_magnet_la_SOURCES) $(mod_mem_cache_la_SOURCES) \
+	$(mod_mem_compress_la_SOURCES) $(mod_mysql_vhost_la_SOURCES) \
+	$(mod_proxy_la_SOURCES) $(mod_redirect_la_SOURCES) \
+	$(mod_rewrite_la_SOURCES) $(mod_rrdtool_la_SOURCES) \
+	$(mod_scgi_la_SOURCES) $(mod_secdownload_la_SOURCES) \
+	$(mod_setenv_la_SOURCES) $(mod_simple_vhost_la_SOURCES) \
+	$(mod_ssi_la_SOURCES) $(mod_staticfile_la_SOURCES) \
+	$(mod_status_la_SOURCES) $(mod_trigger_b4_dl_la_SOURCES) \
+	$(mod_userdir_la_SOURCES) $(mod_usertrack_la_SOURCES) \
+	$(mod_webdav_la_SOURCES) $(lemon_SOURCES) $(lighttpd_SOURCES) \
+	$(lighttpd_angel_SOURCES) $(proc_open_SOURCES) \
+	$(spawn_fcgi_SOURCES)
+DIST_SOURCES = $(am__liblightcomp_la_SOURCES_DIST) \
+	$(mod_access_la_SOURCES) $(mod_accesslog_la_SOURCES) \
+	$(mod_alias_la_SOURCES) $(mod_auth_la_SOURCES) \
+	$(mod_cache_la_SOURCES) $(mod_cgi_la_SOURCES) \
 	$(mod_compress_la_SOURCES) $(mod_dirlisting_la_SOURCES) \
 	$(mod_evasive_la_SOURCES) $(mod_evhost_la_SOURCES) \
 	$(mod_expire_la_SOURCES) $(mod_extforward_la_SOURCES) \
 	$(mod_fastcgi_la_SOURCES) $(mod_flv_streaming_la_SOURCES) \
 	$(mod_indexfile_la_SOURCES) $(mod_magnet_la_SOURCES) \
+	$(mod_mem_cache_la_SOURCES) $(mod_mem_compress_la_SOURCES) \
 	$(mod_mysql_vhost_la_SOURCES) $(mod_proxy_la_SOURCES) \
 	$(mod_redirect_la_SOURCES) $(mod_rewrite_la_SOURCES) \
 	$(mod_rrdtool_la_SOURCES) $(mod_scgi_la_SOURCES) \
@@ -423,28 +445,9 @@ SOURCES = $(liblightcomp_la_SOURCES) $(mod_access_la_SOURCES) \
 	$(mod_staticfile_la_SOURCES) $(mod_status_la_SOURCES) \
 	$(mod_trigger_b4_dl_la_SOURCES) $(mod_userdir_la_SOURCES) \
 	$(mod_usertrack_la_SOURCES) $(mod_webdav_la_SOURCES) \
-	$(lemon_SOURCES) $(lighttpd_SOURCES) $(lighttpd_angel_SOURCES) \
-	$(proc_open_SOURCES) $(spawn_fcgi_SOURCES)
-DIST_SOURCES = $(am__liblightcomp_la_SOURCES_DIST) \
-	$(mod_access_la_SOURCES) $(mod_accesslog_la_SOURCES) \
-	$(mod_alias_la_SOURCES) $(mod_auth_la_SOURCES) \
-	$(mod_cache_la_SOURCES) $(mod_cgi_la_SOURCES) \
-	$(mod_compress_la_SOURCES) $(mod_mem_cache_la_SOURCES) $(mod_mem_compress_la_SOURCES) \
-	$(mod_dirlisting_la_SOURCES) $(mod_evasive_la_SOURCES) \
-	$(mod_evhost_la_SOURCES) $(mod_expire_la_SOURCES) \
-	$(mod_extforward_la_SOURCES) $(mod_fastcgi_la_SOURCES) \
-	$(mod_flv_streaming_la_SOURCES) $(mod_indexfile_la_SOURCES) \
-	$(mod_magnet_la_SOURCES) $(mod_mysql_vhost_la_SOURCES) \
-	$(mod_proxy_la_SOURCES) $(mod_redirect_la_SOURCES) \
-	$(mod_rewrite_la_SOURCES) $(mod_rrdtool_la_SOURCES) \
-	$(mod_scgi_la_SOURCES) $(mod_secdownload_la_SOURCES) \
-	$(mod_setenv_la_SOURCES) $(mod_simple_vhost_la_SOURCES) \
-	$(mod_ssi_la_SOURCES) $(mod_staticfile_la_SOURCES) \
-	$(mod_status_la_SOURCES) $(mod_trigger_b4_dl_la_SOURCES) \
-	$(mod_userdir_la_SOURCES) $(mod_usertrack_la_SOURCES) \
-	$(mod_webdav_la_SOURCES) $(lemon_SOURCES) \
-	$(am__lighttpd_SOURCES_DIST) $(lighttpd_angel_SOURCES) \
-	$(proc_open_SOURCES) $(spawn_fcgi_SOURCES)
+	$(lemon_SOURCES) $(am__lighttpd_SOURCES_DIST) \
+	$(lighttpd_angel_SOURCES) $(proc_open_SOURCES) \
+	$(spawn_fcgi_SOURCES)
 HEADERS = $(noinst_HEADERS)
 ETAGS = etags
 CTAGS = ctags
@@ -469,7 +472,7 @@ CXXCPP = @CXXCPP@
 CXXDEPMODE = @CXXDEPMODE@
 CXXFLAGS = @CXXFLAGS@
 CYGPATH_W = @CYGPATH_W@
-DEFS = @DEFS@ -DLIBRARY_DIR="\"$(libdir)\"" -DSBIN_DIR="\"$(sbindir)\""
+DEFS = @DEFS@ -DHAVE_VERSION_H -DLIBRARY_DIR="\"$(libdir)\"" -DSBIN_DIR="\"$(sbindir)\""
 DEPDIR = @DEPDIR@
 DL_LIB = @DL_LIB@
 DSYMUTIL = @DSYMUTIL@
@@ -593,8 +596,9 @@ AM_CFLAGS = $(FAM_CFLAGS)
 LEMON = $(top_builddir)/src/lemon$(EXEEXT)
 lemon_SOURCES = lemon.c
 lighttpd_angel_SOURCES = lighttpd-angel.c
-BUILT_SOURCES = parsers
+BUILT_SOURCES = parsers versionstamp
 MAINTAINERCLEANFILES = configparser.c configparser.h mod_ssi_exprparser.c mod_ssi_exprparser.h
+CLEANFILES = versionstamp.h versionstamp.h.tmp
 common_src = buffer.c log.c \
       keyvalue.c chunk.c  \
       http_chunk.c stream.c fdevent.c \
@@ -623,14 +627,15 @@ spawn_fcgi_SOURCES = spawn-fcgi.c
 #mod_httptls_la_LDFLAGS = -module -export-dynamic -avoid-version -no-undefined
 #mod_httptls_la_LIBADD = $(common_libadd)
 lib_LTLIBRARIES = $(am__append_1) mod_flv_streaming.la mod_evasive.la \
-	mod_webdav.la mod_magnet.la mod_trigger_b4_dl.la \
-	mod_cache.la mod_mem_cache.la mod_mem_compress.la mod_mysql_vhost.la mod_cgi.la mod_scgi.la \
-	mod_staticfile.la mod_dirlisting.la mod_indexfile.la \
-	mod_setenv.la mod_alias.la mod_userdir.la mod_rrdtool.la \
-	mod_usertrack.la mod_proxy.la mod_ssi.la mod_secdownload.la \
-	mod_expire.la mod_evhost.la mod_simple_vhost.la mod_fastcgi.la \
-	mod_extforward.la mod_access.la mod_compress.la mod_auth.la \
-	mod_rewrite.la mod_redirect.la mod_status.la mod_accesslog.la
+	mod_webdav.la mod_magnet.la mod_trigger_b4_dl.la mod_cache.la \
+	mod_mysql_vhost.la mod_cgi.la mod_scgi.la mod_mem_cache.la \
+	mod_mem_compress.la mod_staticfile.la mod_dirlisting.la \
+	mod_indexfile.la mod_setenv.la mod_alias.la mod_userdir.la \
+	mod_rrdtool.la mod_usertrack.la mod_proxy.la mod_ssi.la \
+	mod_secdownload.la mod_expire.la mod_evhost.la \
+	mod_simple_vhost.la mod_fastcgi.la mod_extforward.la \
+	mod_access.la mod_compress.la mod_auth.la mod_rewrite.la \
+	mod_redirect.la mod_status.la mod_accesslog.la
 @NO_RDYNAMIC_TRUE@liblightcomp_la_SOURCES = $(common_src)
 @NO_RDYNAMIC_TRUE@liblightcomp_la_CFLAGS = $(AM_CFLAGS)
 @NO_RDYNAMIC_TRUE@liblightcomp_la_LDFLAGS = -avoid-version -no-undefined
@@ -656,10 +661,7 @@ mod_trigger_b4_dl_la_LDFLAGS = -module -export-dynamic -avoid-version -no-undefi
 mod_trigger_b4_dl_la_LIBADD = $(GDBM_LIB) $(MEMCACHE_LIB) $(PCRE_LIB) $(common_libadd)
 mod_cache_la_SOURCES = mod_cache.c
 mod_cache_la_LDFLAGS = -module -export-dynamic -avoid-version -no-undefined
-mod_cache_la_LIBADD = $(common_libadd)
-mod_mem_cache_la_SOURCES = mod_mem_cache.c
-mod_mem_cache_la_LDFLAGS = -module -export-dynamic -avoid-version -no-undefined
-mod_mem_cache_la_LIBADD = $(common_libadd)
+mod_cache_la_LIBADD = $(Z_LIB) $(common_libadd)
 mod_mysql_vhost_la_SOURCES = mod_mysql_vhost.c
 mod_mysql_vhost_la_LDFLAGS = -module -export-dynamic -avoid-version -no-undefined
 mod_mysql_vhost_la_LIBADD = $(MYSQL_LIBS) $(common_libadd)
@@ -670,6 +672,12 @@ mod_cgi_la_LIBADD = $(common_libadd)
 mod_scgi_la_SOURCES = mod_scgi.c
 mod_scgi_la_LDFLAGS = -module -export-dynamic -avoid-version -no-undefined
 mod_scgi_la_LIBADD = $(common_libadd)
+mod_mem_cache_la_SOURCES = mod_mem_cache.c
+mod_mem_cache_la_LDFLAGS = -module -export-dynamic -avoid-version -no-undefined
+mod_mem_cache_la_LIBADD = $(common_libadd)
+mod_mem_compress_la_SOURCES = mod_mem_compress.c
+mod_mem_compress_la_LDFLAGS = -module -export-dynamic -avoid-version -no-undefined
+mod_mem_compress_la_LIBADD = $(Z_LIB) $(common_libadd)
 mod_staticfile_la_SOURCES = mod_staticfile.c
 mod_staticfile_la_LDFLAGS = -module -export-dynamic -avoid-version -no-undefined
 mod_staticfile_la_LIBADD = $(common_libadd)
@@ -724,15 +732,6 @@ mod_access_la_LIBADD = $(common_libadd)
 mod_compress_la_SOURCES = mod_compress.c
 mod_compress_la_LDFLAGS = -module -export-dynamic -avoid-version -no-undefined
 mod_compress_la_LIBADD = $(Z_LIB) $(BZ_LIB) $(common_libadd)
-mod_cache_la_SOURCES = mod_cache.c
-mod_cache_la_LDFLAGS = -module -export-dynamic -avoid-version -no-undefined
-mod_cache_la_LIBADD = $(Z_LIB) $(common_libadd)
-mod_mem_cache_la_SOURCES = mod_mem_cache.c
-mod_mem_cache_la_LDFLAGS = -module -export-dynamic -avoid-version -no-undefined
-mod_mem_cache_la_LIBADD = $(common_libadd)
-mod_mem_compress_la_SOURCES = mod_mem_compress.c
-mod_mem_compress_la_LDFLAGS = -module -export-dynamic -avoid-version -no-undefined
-mod_mem_compress_la_LIBADD = $(Z_LIB) $(common_libadd)
 mod_auth_la_SOURCES = mod_auth.c http_auth_digest.c http_auth.c
 mod_auth_la_LDFLAGS = -module -export-dynamic -avoid-version -no-undefined
 mod_auth_la_LIBADD = $(CRYPT_LIB) $(LDAP_LIB) $(LBER_LIB) $(common_libadd)
@@ -760,7 +759,8 @@ hdr = server.h buffer.h network.h log.h keyvalue.h \
       configparser.h mod_ssi_exprparser.h \
       sys-mmap.h sys-socket.h \
       splaytree.h proc_open.h status_counter.h \
-      mod_magnet_cache.h
+      mod_magnet_cache.h \
+      version.h
 
 lighttpd_SOURCES = $(src)
 lighttpd_LDADD = $(PCRE_LIB) $(DL_LIB) $(SENDFILE_LIB) $(ATTR_LIB) $(common_libadd) $(SSL_LIB) $(FAM_LIBS)
@@ -1587,6 +1587,7 @@ install-strip:
 mostlyclean-generic:
 
 clean-generic:
+	-test -z "$(CLEANFILES)" || rm -f $(CLEANFILES)
 
 distclean-generic:
 	-test -z "$(CONFIG_CLEAN_FILES)" || rm -f $(CONFIG_CLEAN_FILES)
@@ -1678,13 +1679,34 @@ uninstall-am: uninstall-binPROGRAMS uninstall-libLTLIBRARIES \
 	uninstall-sbinPROGRAMS
 
 
-#simple_fcgi_SOURCES=simple-fcgi.c
-#simple_fcgi_LDADD=-lfcgi
+.PHONY: versionstamp parsers
+
+versionstamp:
+	@test -f versionstamp.h || touch versionstamp.h; \
+	REVISION=""; \
+	if test -x "`which svnversion`"; then \
+		REVISION="$$(LANG=C svnversion "$(top_srcdir)" 2>/dev/null || echo exported)"; \
+		if test "$$REVISION" = "exported"; then \
+			REVISION=""; \
+		fi; \
+	fi; \
+	if test -z "$$REVISION" -a -x "`which git`"; then \
+		REVISION="$$(cd "$(top_srcdir)"; LANG=C git describe --always 2>/dev/null || echo)"; \
+	fi; \
+	if test -n "$$REVISION"; then \
+		echo "#define REPO_VERSION \"-devel-$$REVISION\"" > versionstamp.h.tmp; \
+	else \
+		echo "#define REPO_VERSION \"\"" > versionstamp.h.tmp; \
+	fi; \
+	if ! diff versionstamp.h.tmp versionstamp.h >/dev/null 2>/dev/null; then \
+		mv versionstamp.h.tmp versionstamp.h; \
+	else \
+		rm versionstamp.h.tmp; \
+	fi
 
 @CROSS_COMPILING_TRUE@configparser.c configparser.h:
 @CROSS_COMPILING_TRUE@mod_ssi_exprparser.c mod_ssi_exprparser.h:
 
-@CROSS_COMPILING_TRUE@.PHONY: parsers
 @CROSS_COMPILING_TRUE@parsers:
 @CROSS_COMPILING_FALSE@configparser.h: configparser.c
 @CROSS_COMPILING_FALSE@configparser.c: $(srcdir)/configparser.y $(srcdir)/lempar.c lemon$(EXEEXT)
@@ -1696,7 +1718,6 @@ uninstall-am: uninstall-binPROGRAMS uninstall-libLTLIBRARIES \
 @CROSS_COMPILING_FALSE@	rm -f mod_ssi_exprparser.h
 @CROSS_COMPILING_FALSE@	$(LEMON) -q $(srcdir)/mod_ssi_exprparser.y $(srcdir)/lempar.c
 
-@CROSS_COMPILING_FALSE@.PHONY: parsers
 @CROSS_COMPILING_FALSE@parsers: configparser.c mod_ssi_exprparser.c
 # Tell versions [3.59,3.63) of GNU make to not export all variables.
 # Otherwise a system limit (for SysV at least) may be exceeded.
