@@ -1,3 +1,7 @@
+2009-06-23
+  * upgrade to lighttpd 1.4.23 with spawn-cgi keeped
+  * modcache v1.8.0
+
 2009-03-14
   * bug fix on shared buffer management
   * mod_mem_compress uses shared buffer if available
