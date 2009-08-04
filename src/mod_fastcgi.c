@@ -2863,8 +2863,14 @@ static handler_t fcgi_write_request(server *srv, handler_ctx *hctx) {
 		/* check the other procs if they have a lower load */
 		for (proc = proc->next; proc; proc = proc->next) {
 			if (proc->state != PROC_STATE_RUNNING) continue;
-			if (proc->load < hctx->proc->load) hctx->proc = proc;
+
+			/* to be more fair on load distribution */
+			if (proc->load <= hctx->proc->load &&
+				(proc->requests < hctx->proc->requests))
+				hctx->proc = proc;
 		}
+
+		++ hctx->proc->requests;
 
 		ret = host->unixsocket->used ? AF_UNIX : AF_INET;
 
