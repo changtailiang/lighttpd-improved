@@ -69,7 +69,8 @@ typedef struct
 	unsigned short lru_remove_count;
 	unsigned short enable;
 	short thresold;
-	uint32_t maxmemory; /* maxium total used memory in MB */
+	uint64_t maxmemory; /* maxium total used memory in MB */
+	int32_t maxmemory_2;
 	uint32_t maxfilesize; /* maxium file size will put into memory */
 	unsigned int expires;
 	array  *filetypes;
@@ -127,7 +128,7 @@ struct cache_entry
 
 static struct cache_entry *memcache;
 
-static unsigned long long usedmemory = 0; /* to support > 4G memory */
+static uint64_t usedmemory = 0; /* to support > 4G memory */
 
 /* probation lru splaytree */
 splay_tree *plru;
@@ -366,7 +367,10 @@ free_cache_entry(struct cache_entry *cache)
 	if (cache == NULL) return;
 	cachenumber --;
 	if (cache->content) {
-		usedmemory -= cache->content->size;
+		if (usedmemory >= cache->content->size)
+			usedmemory -= cache->content->size;
+		else
+			usedmemory = 0;
 		cache->content->ref_count --; // remove share buffer flag
 		buffer_free(cache->content);
 	}
@@ -497,7 +501,7 @@ SETDEFAULTS_FUNC(mod_mem_cache_set_defaults)
 		plugin_config *s;
 		
 		s = calloc(1, sizeof(plugin_config));
-		s->maxmemory = 256; /* 256M default */
+		s->maxmemory_2 = 256; /* 256M default */
 		s->maxfilesize = 512; /* maxium 512k */
 		s->lru_remove_count = 200; /* default 200 */
 		s->enable = 1; /* default to cache content into memory */
@@ -505,7 +509,7 @@ SETDEFAULTS_FUNC(mod_mem_cache_set_defaults)
 		s->filetypes = array_init();
 		s->thresold = 0; /* 0 just like normal LRU algorithm */
 		
-		cv[0].destination = &(s->maxmemory);
+		cv[0].destination = &(s->maxmemory_2);
 		cv[1].destination = &(s->maxfilesize);
 		cv[2].destination = &(s->lru_remove_count);
 		cv[3].destination = &(s->enable);
@@ -526,7 +530,8 @@ SETDEFAULTS_FUNC(mod_mem_cache_set_defaults)
 		if (s->maxfilesize <= 0) s->maxfilesize = 512; /* 512K */
 		s->maxfilesize *= 1024; /* KBytes */
 
-		if (s->maxmemory <= 0) s->maxmemory = 256; /* 256M */
+		if (s->maxmemory_2 <= 0) s->maxmemory_2 = 256; /* 256M */
+		s->maxmemory = s->maxmemory_2;
 		s->maxmemory *= 1024*1024; /* MBytes */
 
 		if (srv->srvconf.max_worker > 0)
@@ -921,7 +926,10 @@ mod_mem_cache_uri_handler(server *srv, connection *con, void *p_d)
 			init_cache_entry(cache);
 
 			if (cache->content->size < sce->st.st_size) {
-				usedmemory -= cache->content->size;
+				if (usedmemory >= cache->content->size)
+					usedmemory -= cache->content->size;
+				else
+					usedmemory = 0;
 				buffer_prepare_copy(cache->content, sce->st.st_size+1);
 				usedmemory += cache->content->size;
 			}
