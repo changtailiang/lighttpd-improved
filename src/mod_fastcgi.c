@@ -315,6 +315,8 @@ typedef struct {
 	array *ext_mapping;
 
 	int debug;
+
+	int worked_with_mod_cache;
 } plugin_config;
 
 typedef struct {
@@ -1151,6 +1153,7 @@ SETDEFAULTS_FUNC(mod_fastcgi_set_defaults) {
 		{ "fastcgi.server",              NULL, T_CONFIG_LOCAL, T_CONFIG_SCOPE_CONNECTION },       /* 0 */
 		{ "fastcgi.debug",               NULL, T_CONFIG_SHORT, T_CONFIG_SCOPE_CONNECTION },       /* 1 */
 		{ "fastcgi.map-extensions",      NULL, T_CONFIG_ARRAY, T_CONFIG_SCOPE_CONNECTION },       /* 2 */
+		{ "fastcgi.worked-with-mod-cache",  NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION },       /* 3 */
 		{ NULL,                          NULL, T_CONFIG_UNSET, T_CONFIG_SCOPE_UNSET }
 	};
 
@@ -1164,10 +1167,12 @@ SETDEFAULTS_FUNC(mod_fastcgi_set_defaults) {
 		s->exts          = fastcgi_extensions_init();
 		s->debug         = 0;
 		s->ext_mapping   = array_init();
+		s->worked_with_mod_cache = 1;
 
 		cv[0].destination = s->exts;
 		cv[1].destination = &(s->debug);
 		cv[2].destination = s->ext_mapping;
+		cv[3].destination = &(s->worked_with_mod_cache);
 
 		p->config_storage[i] = s;
 		ca = ((data_config *)srv->config_context->data[i])->value;
@@ -3402,6 +3407,7 @@ static int fcgi_patch_connection(server *srv, connection *con, plugin_data *p) {
 	PATCH(exts);
 	PATCH(debug);
 	PATCH(ext_mapping);
+	PATCH(worked_with_mod_cache);
 
 	/* skip the first, the global context */
 	for (i = 1; i < srv->config_context->used; i++) {
@@ -3419,6 +3425,8 @@ static int fcgi_patch_connection(server *srv, connection *con, plugin_data *p) {
 				PATCH(exts);
 			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("fastcgi.debug"))) {
 				PATCH(debug);
+			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("fastcgi.worked-with-mod-cache"))) {
+				PATCH(worked_with_mod_cache);
 			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("fastcgi.map-extensions"))) {
 				PATCH(ext_mapping);
 			}
@@ -3450,6 +3458,9 @@ static handler_t fcgi_check_extension(server *srv, connection *con, void *p_d, i
 	s_len = fn->used - 1;
 
 	fcgi_patch_connection(srv, con, p);
+
+	/* check mod_cache settings */
+	if (p->conf.worked_with_mod_cache && con->use_cache_file) return HANDLER_GO_ON;
 
 	/* fastcgi.map-extensions maps extensions to existing fastcgi.server entries
 	 *
@@ -3651,6 +3662,7 @@ static handler_t fcgi_check_extension(server *srv, connection *con, void *p_d, i
 		}
 	}
 
+	con->write_cache_file = 1;
 	return HANDLER_GO_ON;
 }
 
