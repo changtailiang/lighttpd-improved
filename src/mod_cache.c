@@ -731,7 +731,7 @@ struct memory_cache *
 get_memory_cache(handler_ctx *hctx)
 {
 	unsigned int i;
-	struct memory_cache *c;
+	struct memory_cache *c, *cp;
 
 	if (hctx == NULL) return NULL;
 
@@ -739,14 +739,24 @@ get_memory_cache(handler_ctx *hctx)
 	memory_store[i] = splaytree_splay(memory_store[i], hctx->hash);
 	if (memory_store[i] == NULL || memory_store[i]->key != hctx->hash)
 		return NULL;
-	c = (struct memory_cache *)memory_store[i]->data;
+	cp = c = (struct memory_cache *)memory_store[i]->data;
 	while (c) {
-		if (c->memoryid == NULL || !buffer_is_equal(hctx->memoryid, c->memoryid))
+		if (c->memoryid == NULL || !buffer_is_equal(hctx->memoryid, c->memoryid)) {
+			cp = c;
 			c = c->next;
-		else
+		} else {
 			break;
+		}
 	}
-	if (c) update_lru(i);
+	if (c) {
+		if (cp != c) {
+			/* c is in the middle of list, move it to head */
+			cp->next = c->next;
+			c->next = (struct memory_cache *)memory_store[i]->data;
+			memory_store[i]->data = (void *)c;
+		}
+		update_lru(i);
+	}
 	return c;
 }
 
@@ -754,7 +764,7 @@ void
 update_memory_cache_headers(handler_ctx *hctx, array *d)
 {
 	unsigned int i;
-	struct memory_cache *c, *c1;
+	struct memory_cache *c;
 
 	if (hctx == NULL || d == NULL) return;
 
@@ -764,26 +774,29 @@ update_memory_cache_headers(handler_ctx *hctx, array *d)
 		/* new entry */
 		c = (struct memory_cache *)calloc(1, sizeof(struct memory_cache));
 		if (c == NULL) return;
+		c->next = NULL;
 		c->headers = d;
 		c->memoryid = buffer_init();
 		buffer_copy_string_buffer(c->memoryid, hctx->memoryid);
 		memory_store[i] = splaytree_insert(memory_store[i], hctx->hash, c);
 		local_cache_number ++;
 	} else {
-		c1 = c = (struct memory_cache *)memory_store[i]->data;
+		c = (struct memory_cache *)memory_store[i]->data;
 		while (c) {
-			if (c->memoryid == NULL || !buffer_is_equal(hctx->memoryid, c->memoryid)) {
-				c1 = c;
+			if (c->memoryid == NULL || !buffer_is_equal(hctx->memoryid, c->memoryid))
 				c = c->next;
-			} else {
+			else
 				break;
-			}
 		}
+
 		if (c == NULL) {
 			c = (struct memory_cache *)calloc(1, sizeof(struct memory_cache));
 			if (c == NULL) return;
-			if (c1) c1->next = c;
-			else memory_store[i]->data = (void *) c; /* memory_store[i]->data == NULL */
+
+			/* put it at the head of list */
+			c->next = (struct memory_cache *)memory_store[i]->data;
+			memory_store[i]->data = (void *) c;
+
 			c->memoryid = buffer_init();
 			buffer_copy_string_buffer(c->memoryid, hctx->memoryid);
 			local_cache_number ++;
