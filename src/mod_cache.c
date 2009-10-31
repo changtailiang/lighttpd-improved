@@ -185,6 +185,7 @@ typedef struct
 #define CACHE_USE_MEMORY BV(8)
 #define CACHE_IGNORE_VARY BV(11)
 #define CACHE_MEMORY_COMPRESS BV(12)
+#define CACHE_IGNORE_SET_COOKIE BV(13)
 
 #define ASISEXT	".cachehd"
 
@@ -261,6 +262,8 @@ typedef struct
 	unsigned int use_memory:1;
 	/* ignore 'Vary' response header */
 	unsigned int ignore_vary:1;
+	/* ignore 'Set-Cookie' response header */
+	unsigned int ignore_set_cookie:1;
 
 #ifdef USE_ZLIB
 	unsigned int memory_compress:1;
@@ -1074,6 +1077,8 @@ SETDEFAULTS_FUNC(mod_cache_set_defaults)
 					s->rp[m].type |= CACHE_USE_MEMORY;
 				else if (strncmp(p3, "ignore-vary", sizeof("ignore-vary")) == 0)
 					s->rp[m].type |= CACHE_IGNORE_VARY;
+				else if (strncmp(p3, "ignore-set-cookie", sizeof("ignore-set-cookie")) == 0)
+					s->rp[m].type |= CACHE_IGNORE_SET_COOKIE;
 				else if (strncmp(p3, "memory-compress", sizeof("memory-compress")) == 0)
 					s->rp[m].type |= CACHE_MEMORY_COMPRESS;
 				else if (strncmp(p3, "ignore-cache-control-header", sizeof("ignore-cache-control-header")) == 0)
@@ -1506,11 +1511,13 @@ check_response_iscachable(server *srv, connection *con, plugin_data *p, handler_
 	}
 
 	/* don't save response with 'Set-Cookie' */
+	if ((hctx->ignore_set_cookie == 0) &&
 #ifdef LIGHTTPD_V14
-	if (NULL != (ds = (data_string *)array_get_element(con->response.headers, "Set-Cookie"))) {
+		(NULL != (ds = (data_string *)array_get_element(con->response.headers, "Set-Cookie")))
 #else
-	if (NULL != (ds = (data_string *)array_get_element(con->response.headers, CONST_STR_LEN("Set-Cookie")))) {
+		(NULL != (ds = (data_string *)array_get_element(con->response.headers, CONST_STR_LEN("Set-Cookie"))))
 #endif
+		) {
 		if (p->conf.debug)
 			log_error_write(srv, __FILE__, __LINE__, "sbb", "ignore response with Set-Cookie:", ds->value, con->uri.path);
 		return 0;
@@ -2095,6 +2102,7 @@ mod_cache_uri_handler(server *srv, connection *con, void *p_d)
 				if (type & CACHE_OVERRIDE_EXPIRE) hctx->override_expire = 1;
 				if (type & CACHE_USE_MEMORY) hctx->use_memory = 1;
 				if (type & CACHE_IGNORE_VARY) hctx->ignore_vary = 1;
+				if (type & CACHE_IGNORE_SET_COOKIE) hctx->ignore_set_cookie = 1;
 				if (type & CACHE_MEMORY_COMPRESS) hctx->memory_compress = 1;
 				if (type & CACHE_IGNORE_CACHE_CONTROL_HEADER) hctx->ignore_cache_control_header = 1;
 
