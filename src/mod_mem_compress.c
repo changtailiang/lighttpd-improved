@@ -155,7 +155,6 @@ gzip_cache_free(struct gzip_cache *cache)
 	cachenumber --;
 	if (cache->content) {
 		usedmemory -= cache->content->size;
-		cache->content->ref_count --; // remove share buffer flag
 		buffer_free(cache->content);
 		cache->content = NULL;
 	}

@@ -371,7 +371,6 @@ free_cache_entry(struct cache_entry *cache)
 			usedmemory -= cache->content->size;
 		else
 			usedmemory = 0;
-		cache->content->ref_count --; // remove share buffer flag
 		buffer_free(cache->content);
 	}
 	buffer_free(cache->content_type);
