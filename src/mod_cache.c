@@ -532,7 +532,6 @@ memory_cache_free(struct memory_cache *cache)
 			used_memory_size = 0;
 		else
 			used_memory_size -= cache->content->size;
-		cache->content->ref_count --; // remove share buffer flag
 		buffer_free(cache->content);
 	}
 
@@ -542,7 +541,6 @@ memory_cache_free(struct memory_cache *cache)
 			used_memory_size = 0;
 		else
 			used_memory_size -= cache->gzip_content->size;
-		cache->gzip_content->ref_count --; // remove share buffer flag
 		buffer_free(cache->gzip_content);
 	}
 #endif
@@ -867,7 +865,6 @@ delete_memory_cache(server *srv, handler_ctx *hctx)
 			used_memory_size = 0;
 		else
 			used_memory_size -= c->content->size;
-		c->content->ref_count --; // remove share buffer flag
 		buffer_free(c->content);
 	}
 
@@ -877,7 +874,6 @@ delete_memory_cache(server *srv, handler_ctx *hctx)
 			used_memory_size = 0;
 		else
 			used_memory_size -= c->gzip_content->size;
-		c->gzip_content->ref_count --; // remove share buffer flag
 		buffer_free(c->gzip_content);
 	}
 #endif
@@ -2619,7 +2615,6 @@ mod_cache_cleanup(server *srv, connection *con, void *p_d)
 							used_memory_size = 0;
 						else
 							used_memory_size -= mc->content->size;
-						mc->content->ref_count --; // remove share buffer flag
 						buffer_free(mc->content);
 					}
 #ifdef USE_ZLIB
@@ -2628,7 +2623,6 @@ mod_cache_cleanup(server *srv, connection *con, void *p_d)
 							used_memory_size = 0;
 						else
 							used_memory_size -= mc->gzip_content->size;
-						mc->gzip_content->ref_count --; // remove share buffer flag
 						buffer_free(mc->gzip_content);
 					}
 #endif
