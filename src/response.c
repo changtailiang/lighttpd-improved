@@ -1,3 +1,14 @@
+#include "response.h"
+#include "keyvalue.h"
+#include "log.h"
+#include "stat_cache.h"
+#include "chunk.h"
+
+#include "configfile.h"
+#include "connections.h"
+
+#include "plugin.h"
+
 #include <sys/types.h>
 #include <sys/stat.h>
 
@@ -12,17 +23,6 @@
 #include <assert.h>
 
 #include <stdio.h>
-
-#include "response.h"
-#include "keyvalue.h"
-#include "log.h"
-#include "stat_cache.h"
-#include "chunk.h"
-
-#include "configfile.h"
-#include "connections.h"
-
-#include "plugin.h"
 
 #include "sys-socket.h"
 #include "version.h"
@@ -45,8 +45,10 @@ int http_response_write_header(server *srv, connection *con) {
 	buffer_append_string(b, get_http_status_name(con->http_status));
 
 	/* disable keep-alive if requested */
-	if (con->request_count > con->conf.max_keep_alive_requests) {
+	if (con->request_count > con->conf.max_keep_alive_requests || 0 == con->conf.max_keep_alive_idle) {
 		con->keep_alive = 0;
+	} else {
+		con->keep_alive_idle = con->conf.max_keep_alive_idle;
 	}
 
 	if (con->request.http_version != HTTP_VERSION_1_1 || con->keep_alive == 0) {
@@ -70,7 +72,7 @@ int http_response_write_header(server *srv, connection *con) {
 
 		if (ds->value->used && ds->key->used &&
 		    0 != strncasecmp(ds->key->ptr, CONST_STR_LEN("X-LIGHTTPD-")) &&
-			0 != strcasecmp(ds->key->ptr, "X-Sendfile")) {
+			0 != strncasecmp(ds->key->ptr, CONST_STR_LEN("X-Sendfile"))) {
 			if (0 == strcasecmp(ds->key->ptr, "Date")) have_date = 1;
 			if (0 == strcasecmp(ds->key->ptr, "Server")) have_server = 1;
 			if (0 == strcasecmp(ds->key->ptr, "Content-Encoding") && 304 == con->http_status) continue;
@@ -139,6 +141,75 @@ int http_response_write_header(server *srv, connection *con) {
 	return 0;
 }
 
+#ifdef USE_OPENSSL
+static void https_add_ssl_entries(connection *con) {
+	X509 *xs;
+	X509_NAME *xn;
+	X509_NAME_ENTRY *xe;
+	if (
+		SSL_get_verify_result(con->ssl) != X509_V_OK
+		|| !(xs = SSL_get_peer_certificate(con->ssl))
+	) {
+		return;
+	}
+
+	xn = X509_get_subject_name(xs);
+	for (int i = 0, nentries = X509_NAME_entry_count(xn); i < nentries; ++i) {
+		int xobjnid;
+		const char * xobjsn;
+		data_string *envds;
+
+		if (!(xe = X509_NAME_get_entry(xn, i))) {
+			continue;
+		}
+		xobjnid = OBJ_obj2nid((ASN1_OBJECT*)X509_NAME_ENTRY_get_object(xe));
+		xobjsn = OBJ_nid2sn(xobjnid);
+		if (!xobjsn) {
+			continue;
+		}
+
+		if (NULL == (envds = (data_string *)array_get_unused_element(con->environment, TYPE_STRING))) {
+			envds = data_string_init();
+		}
+		buffer_copy_string_len(envds->key, CONST_STR_LEN("SSL_CLIENT_S_DN_"));
+		buffer_append_string(envds->key, xobjsn);
+		buffer_copy_string_len(
+			envds->value,
+			(const char *)xe->value->data, xe->value->length
+		);
+		/* pick one of the exported values as "authed user", for example
+		 * ssl.verifyclient.username   = "SSL_CLIENT_S_DN_UID" or "SSL_CLIENT_S_DN_emailAddress"
+		 */
+		if (buffer_is_equal(con->conf.ssl_verifyclient_username, envds->key)) {
+			buffer_copy_string_buffer(con->authed_user, envds->value);
+		}
+		array_insert_unique(con->environment, (data_unset *)envds);
+	}
+	if (con->conf.ssl_verifyclient_export_cert) {
+		BIO *bio;
+		if (NULL != (bio = BIO_new(BIO_s_mem()))) {
+			data_string *envds;
+			int n;
+
+			PEM_write_bio_X509(bio, xs);
+			n = BIO_pending(bio);
+
+			if (NULL == (envds = (data_string *)array_get_unused_element(con->environment, TYPE_STRING))) {
+				envds = data_string_init();
+			}
+
+			buffer_copy_string_len(envds->key, CONST_STR_LEN("SSL_CLIENT_CERT"));
+			buffer_prepare_copy(envds->value, n+1);
+			BIO_read(bio, envds->value->ptr, n);
+			BIO_free(bio);
+			envds->value->ptr[n] = '\0';
+			envds->value->used = n+1;
+			array_insert_unique(con->environment, (data_unset *)envds);
+		}
+	}
+	X509_free(xs);
+}
+#endif
 
 
 handler_t http_response_prepare(server *srv, connection *con) {
@@ -286,6 +357,12 @@ handler_t http_response_prepare(server *srv, connection *con) {
 			log_error_write(srv, __FILE__, __LINE__,  "s",  "-- sanatising URI");
 			log_error_write(srv, __FILE__, __LINE__,  "sb", "URI-path     : ", con->uri.path);
 		}
+
+#ifdef USE_OPENSSL
+		if (con->conf.is_ssl && con->conf.ssl_verifyclient) {
+			https_add_ssl_entries(con);
+		}
+#endif
 
 		/**
 		 *

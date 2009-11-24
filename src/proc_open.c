@@ -1,15 +1,16 @@
+#include "proc_open.h"
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <ctype.h>
 #include <errno.h>
-#include "proc_open.h"
 
 #ifdef WIN32
-#include <io.h>
-#include <fcntl.h>
+# include <io.h>
+# include <fcntl.h>
 #else
-#include <sys/wait.h>
-#include <unistd.h>
+# include <sys/wait.h>
+# include <unistd.h>
 #endif
 
 
@@ -309,6 +310,14 @@ int proc_open_buffer(const char *command, buffer *in, buffer *out, buffer *err) 
 
 	if (err) {
 		proc_read_fd_to_buffer(proc.err.fd, err);
+	} else {
+		buffer *tmp = buffer_init();
+		proc_read_fd_to_buffer(proc.err.fd, tmp);
+		if (tmp->used > 0 &&  write(2, (void*)tmp->ptr, tmp->used) < 0) {
+			perror("error writing pipe");
+			return -1;
+		}
+		buffer_free(tmp);
 	}
 	pipe_close(&proc.err);
 

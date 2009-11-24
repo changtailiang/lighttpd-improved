@@ -1,3 +1,15 @@
+#include "base.h"
+#include "log.h"
+#include "buffer.h"
+#include "response.h"
+
+#include "plugin.h"
+
+#include "stream.h"
+#include "stat_cache.h"
+
+#include "sys-mmap.h"
+
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <ctype.h>
@@ -11,10 +23,6 @@
 #include <unistd.h>
 #include <dirent.h>
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
-
 #if defined(HAVE_LIBXML_H) && defined(HAVE_SQLITE3_H)
 #define USE_PROPPATCH
 #include <libxml/tree.h>
@@ -27,18 +35,6 @@
 #define USE_LOCKS
 #include <uuid/uuid.h>
 #endif
-
-#include "base.h"
-#include "log.h"
-#include "buffer.h"
-#include "response.h"
-
-#include "plugin.h"
-
-#include "stream.h"
-#include "stat_cache.h"
-
-#include "sys-mmap.h"
 
 /**
  * this is a webdav for a lighttpd plugin
@@ -1096,6 +1092,7 @@ static int webdav_parse_chunkqueue(server *srv, connection *con, plugin_data *p,
 }
 #endif
 
+#ifdef USE_LOCKS
 static int webdav_lockdiscovery(server *srv, connection *con,
 		buffer *locktoken, const char *lockscope, const char *locktype, int depth) {
 
@@ -1150,6 +1147,8 @@ static int webdav_lockdiscovery(server *srv, connection *con,
 
 	return 0;
 }
+#endif
+
 /**
  * check if resource is having the right locks to access to resource
  *
@@ -1783,7 +1782,7 @@ URIHANDLER_FUNC(mod_webdav_subrequest_handler) {
 	case HTTP_METHOD_MOVE:
 	case HTTP_METHOD_COPY: {
 		buffer *destination = NULL;
-		char *sep, *start;
+		char *sep, *sep2, *start;
 		int overwrite = 1;
 
 		if (p->conf.is_readonly) {
@@ -1841,6 +1840,10 @@ URIHANDLER_FUNC(mod_webdav_subrequest_handler) {
 		if (NULL == (sep = strchr(start, '/'))) {
 			con->http_status = 400;
 			return HANDLER_FINISHED;
+		}
+		if (NULL != (sep2 = memchr(start, '@', sep - start))) {
+			/* skip login information */
+			start = sep2 + 1;
 		}
 		buffer_copy_string_len(p->uri.authority, start, sep - start);
 
@@ -1977,8 +1980,25 @@ URIHANDLER_FUNC(mod_webdav_subrequest_handler) {
 
 				if (0 == rename(con->physical.path->ptr, p->physical.path->ptr)) {
 #ifdef USE_PROPPATCH
-					sqlite3_stmt *stmt = p->conf.stmt_move_uri;
+					sqlite3_stmt *stmt;
 
+					stmt = p->conf.stmt_delete_uri;
+					if (stmt) {
+
+						sqlite3_reset(stmt);
+
+						/* bind the values to the insert */
+						sqlite3_bind_text(stmt, 1,
+								  con->uri.path->ptr,
+								  con->uri.path->used - 1,
+								  SQLITE_TRANSIENT);
+
+						if (SQLITE_DONE != sqlite3_step(stmt)) {
+							log_error_write(srv, __FILE__, __LINE__, "ss", "sql-move(delete old) failed:", sqlite3_errmsg(p->conf.sql));
+						}
+					}
+
+					stmt = p->conf.stmt_move_uri;
 					if (stmt) {
 
 						sqlite3_reset(stmt);

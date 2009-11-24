@@ -1,14 +1,23 @@
+#include "server.h"
+#include "stat_cache.h"
+#include "keyvalue.h"
+#include "log.h"
+#include "connections.h"
+#include "joblist.h"
+#include "http_chunk.h"
+
+#include "plugin.h"
+
 #include <sys/types.h>
+
 #ifdef __WIN32
-#include <winsock2.h>
+# include <winsock2.h>
 #else
-#include <sys/socket.h>
-#include <sys/wait.h>
-#include <sys/mman.h>
-
-#include <netinet/in.h>
-
-#include <arpa/inet.h>
+# include <sys/socket.h>
+# include <sys/wait.h>
+# include <sys/mman.h>
+# include <netinet/in.h>
+# include <arpa/inet.h>
 #endif
 
 #include <unistd.h>
@@ -22,16 +31,6 @@
 
 #include <stdio.h>
 #include <fcntl.h>
-
-#include "server.h"
-#include "stat_cache.h"
-#include "keyvalue.h"
-#include "log.h"
-#include "connections.h"
-#include "joblist.h"
-#include "http_chunk.h"
-
-#include "plugin.h"
 
 #ifdef HAVE_SYS_FILIO_H
 # include <sys/filio.h>
@@ -56,6 +55,7 @@ typedef struct {
 
 typedef struct {
 	array *cgi;
+	unsigned short execute_x_only;
 } plugin_config;
 
 typedef struct {
@@ -151,6 +151,7 @@ SETDEFAULTS_FUNC(mod_fastcgi_set_defaults) {
 
 	config_values_t cv[] = {
 		{ "cgi.assign",                  NULL, T_CONFIG_ARRAY, T_CONFIG_SCOPE_CONNECTION },       /* 0 */
+		{ "cgi.execute-x-only",          NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION },     /* 1 */
 		{ NULL,                          NULL, T_CONFIG_UNSET, T_CONFIG_SCOPE_UNSET}
 	};
 
@@ -165,8 +166,10 @@ SETDEFAULTS_FUNC(mod_fastcgi_set_defaults) {
 		assert(s);
 
 		s->cgi    = array_init();
+		s->execute_x_only = 0;
 
 		cv[0].destination = s->cgi;
+		cv[1].destination = &(s->execute_x_only);
 
 		p->config_storage[i] = s;
 
@@ -580,12 +583,9 @@ static handler_t cgi_connection_close(server *srv, handler_ctx *hctx) {
 #if 0
 				log_error_write(srv, __FILE__, __LINE__, "sd", "(debug) cgi exited fine, pid:", pid);
 #endif
-				pid = 0;
-
 				return HANDLER_GO_ON;
 			} else {
 				log_error_write(srv, __FILE__, __LINE__, "sd", "cgi died, pid:", pid);
-				pid = 0;
 				return HANDLER_GO_ON;
 			}
 		}
@@ -1005,7 +1005,7 @@ static int cgi_create_env(server *srv, connection *con, plugin_data *p, buffer *
 			args[i++] = cgi_handler->ptr;
 		}
 		args[i++] = con->physical.path->ptr;
-		args[i++] = NULL;
+		args[i  ] = NULL;
 
 		/* search for the last / */
 		if (NULL != (c = strrchr(con->physical.path->ptr, '/'))) {
@@ -1017,8 +1017,6 @@ static int cgi_create_env(server *srv, connection *con, plugin_data *p, buffer *
 			}
 			*c = '/';
 		}
-
-		openDevNull(STDERR_FILENO);
 
 		/* we don't need the client socket */
 		for (i = 3; i < 256; i++) {
@@ -1198,6 +1196,8 @@ static int mod_cgi_patch_connection(server *srv, connection *con, plugin_data *p
 
 			if (buffer_is_equal_string(du->key, CONST_STR_LEN("cgi.assign"))) {
 				PATCH(cgi);
+			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("cgi.execute-x-only"))) {
+				PATCH(execute_x_only);
 			}
 		}
 	}
@@ -1220,6 +1220,7 @@ URIHANDLER_FUNC(cgi_is_handled) {
 
 	if (HANDLER_ERROR == stat_cache_get_entry(srv, con, con->physical.path, &sce)) return HANDLER_GO_ON;
 	if (!S_ISREG(sce->st.st_mode)) return HANDLER_GO_ON;
+	if (p->conf.execute_x_only == 1 && (sce->st.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) == 0) return HANDLER_GO_ON;
 
 	s_len = fn->used - 1;
 

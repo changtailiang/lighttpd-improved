@@ -1,15 +1,14 @@
-#define _GNU_SOURCE
-
-#include <string.h>
-#include <errno.h>
-#include <time.h>
-
 #include "base.h"
 #include "array.h"
 #include "buffer.h"
 #include "log.h"
 #include "etag.h"
 #include "response.h"
+
+#include <string.h>
+#include <errno.h>
+
+#include <time.h>
 
 /*
  * This was 'borrowed' from tcpdump.
@@ -98,6 +97,21 @@ int response_header_overwrite(server *srv, connection *con, const char *key, siz
 	if (NULL != (ds = (data_string *)array_get_element(con->response.headers, key))) {
 		buffer_copy_string(ds->value, value);
 
+		return 0;
+	}
+
+	return response_header_insert(srv, con, key, keylen, value, vallen);
+}
+
+int response_header_append(server *srv, connection *con, const char *key, size_t keylen, const char *value, size_t vallen) {
+	data_string *ds;
+
+	UNUSED(srv);
+
+	/* if there already is a key by this name append the value */
+	if (NULL != (ds = (data_string *)array_get_element(con->response.headers, key))) {
+		buffer_append_string_len(ds->value, CONST_STR_LEN(", "));
+		buffer_append_string_len(ds->value, value, vallen);
 		return 0;
 	}
 
@@ -259,7 +273,7 @@ int http_response_handle_cachable(server *srv, connection *con, buffer *mtime, b
 					}
 
 					if (0 == strncmp(con->request.http_if_modified_since, mtime->ptr, used_len)) {
-						con->http_status = 304;
+						if ('\0' == mtime->ptr[used_len]) con->http_status = 304;
 						return HANDLER_FINISHED;
 					} else {
 						char buf[sizeof("Sat, 23 Jul 2005 21:20:01 GMT")];
@@ -281,15 +295,16 @@ int http_response_handle_cachable(server *srv, connection *con, buffer *mtime, b
 						strncpy(buf, con->request.http_if_modified_since, used_len);
 						buf[used_len] = '\0';
 
-						tm.tm_isdst = 0;
 						if (NULL == strptime(buf, "%a, %d %b %Y %H:%M:%S GMT", &tm)) {
 							con->http_status = 412;
 							con->mode = DIRECT;
 							return HANDLER_FINISHED;
 						}
+						tm.tm_isdst = 0;
 						t_header = mktime(&tm);
 
 						strptime(mtime->ptr, "%a, %d %b %Y %H:%M:%S GMT", &tm);
+						tm.tm_isdst = 0;
 						t_file = mktime(&tm);
 
 						if (t_file > t_header) return HANDLER_GO_ON;
@@ -318,7 +333,7 @@ int http_response_handle_cachable(server *srv, connection *con, buffer *mtime, b
 		}
 
 		if (0 == strncmp(con->request.http_if_modified_since, mtime->ptr, used_len)) {
-			con->http_status = 304;
+			if ('\0' == mtime->ptr[used_len]) con->http_status = 304;
 			return HANDLER_FINISHED;
 		} else {
 			char buf[sizeof("Sat, 23 Jul 2005 21:20:01 GMT")];
@@ -331,18 +346,17 @@ int http_response_handle_cachable(server *srv, connection *con, buffer *mtime, b
 			strncpy(buf, con->request.http_if_modified_since, used_len);
 			buf[used_len] = '\0';
 
-			tm.tm_isdst = 0;
 			if (NULL == strptime(buf, "%a, %d %b %Y %H:%M:%S GMT", &tm)) {
 				/**
 				 * parsing failed, let's get out of here 
 				 */
-				log_error_write(srv, __FILE__, __LINE__, "ss",
-						"strptime() failed on", buf);
 				return HANDLER_GO_ON;
 			}
+			tm.tm_isdst = 0;
 			t_header = mktime(&tm);
 
 			strptime(mtime->ptr, "%a, %d %b %Y %H:%M:%S GMT", &tm);
+			tm.tm_isdst = 0;
 			t_file = mktime(&tm);
 
 			if (t_file > t_header) return HANDLER_GO_ON;

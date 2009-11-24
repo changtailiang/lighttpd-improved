@@ -39,6 +39,12 @@ extern char *getenv();
 #   endif
 #endif
 
+#if __GNUC__ > 2
+#define NORETURN __attribute__ ((__noreturn__))
+#else
+#define NORETURN
+#endif
+
 /* #define PRIVATE static */
 #define PRIVATE static
 
@@ -51,7 +57,7 @@ extern char *getenv();
 char *msort();
 extern void *malloc();
 
-extern void memory_error();
+extern void memory_error() NORETURN;
 
 /******** From the file "action.h" *************************************/
 struct action *Action_new();
@@ -59,7 +65,7 @@ struct action *Action_sort();
 void Action_add();
 
 /********* From the file "assert.h" ************************************/
-void myassert();
+void myassert() NORETURN;
 #ifndef NDEBUG
 #  define assert(X) if(!(X))myassert(__FILE__,__LINE__)
 #else
@@ -1333,7 +1339,7 @@ void ErrorMsg(const char *filename, int lineno, const char *format, ...){
 /* Report an out-of-memory condition and abort.  This function
 ** is used mostly by the "MemoryCheck" macro in struct.h
 */
-void memory_error(){
+void memory_error() {
   fprintf(stderr,"Out of memory.  Aborting...\n");
   exit(1);
 }
@@ -1608,7 +1614,6 @@ int k;
 FILE *err;
 {
   int spcnt, i;
-  spcnt = 0;
   if( argv[0] ) fprintf(err,"%s",argv[0]);
   spcnt = strlen(argv[0]) + 1;
   for(i=1; i<n && argv[i]; i++){
@@ -2336,6 +2341,7 @@ struct lemon *gp;
   if( filebuf==0 ){
     ErrorMsg(ps.filename,0,"Can't allocate %d of memory to hold this file.",
       filesize+1);
+    fclose(fp);
     gp->errorcnt++;
     return;
   }
@@ -2343,6 +2349,7 @@ struct lemon *gp;
     ErrorMsg(ps.filename,0,"Can't read in all %d bytes of this file.",
       filesize);
     free(filebuf);
+    fclose(fp);
     gp->errorcnt++;
     return;
   }
@@ -2913,7 +2920,7 @@ int *lineno;
  }else if( sp->destructor ){
    cp = sp->destructor;
    fprintf(out,"#line %d \"%s\"\n{",sp->destructorln,lemp->filename);
- }else if( lemp->vardest ){
+ }else{
    cp = lemp->vardest;
    if( cp==0 ) return;
    fprintf(out,"#line %d \"%s\"\n{",lemp->vardestln,lemp->filename);
@@ -3042,7 +3049,7 @@ struct lemon *lemp;         /* The main info structure for this parser */
 int *plineno;               /* Pointer to the line number */
 int mhflag;                 /* True if generating makeheaders output */
 {
-  int lineno = *plineno;    /* The line number of the output */
+  int lineno;               /* The line number of the output */
   char **types;             /* A hash table of datatypes */
   int arraysize;            /* Size of the "types" array */
   int maxdtlength;          /* Maximum length of any ".datatype" field. */

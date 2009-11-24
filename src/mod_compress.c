@@ -1,14 +1,3 @@
-#include <sys/types.h>
-#include <sys/stat.h>
-
-#include <fcntl.h>
-#include <unistd.h>
-#include <ctype.h>
-#include <stdlib.h>
-#include <string.h>
-#include <errno.h>
-#include <time.h>
-
 #include "base.h"
 #include "log.h"
 #include "buffer.h"
@@ -19,6 +8,17 @@
 
 #include "crc32.h"
 #include "etag.h"
+
+#include <sys/types.h>
+#include <sys/stat.h>
+
+#include <fcntl.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#include <time.h>
 
 #if defined HAVE_ZLIB_H && defined HAVE_LIBZ
 # define USE_ZLIB
@@ -42,7 +42,7 @@
 #define HTTP_ACCEPT_ENCODING_BZIP2    BV(4)
 
 #ifdef __WIN32
-#define mkdir(x,y) mkdir(x)
+# define mkdir(x,y) mkdir(x)
 #endif
 
 typedef struct {
@@ -661,6 +661,7 @@ PHYSICALPATH_FUNC(mod_compress_physical) {
 	off_t max_fsize;
 	stat_cache_entry *sce = NULL;
 	buffer *mtime = NULL;
+	buffer *content_type;
 
 	if (con->mode != DIRECT || con->http_status) return HANDLER_GO_ON;
 
@@ -713,6 +714,15 @@ PHYSICALPATH_FUNC(mod_compress_physical) {
 	if (sce->st.st_size < 128) return HANDLER_GO_ON;
 
 	/* check if mimetype is in compress-config */
+	content_type = 0;
+	if (sce->content_type->ptr) {
+		char *c;
+		if ( (c = strchr(sce->content_type->ptr, ';')) != 0) {
+			content_type = srv->tmp_buf;
+			buffer_copy_string_len(content_type, sce->content_type->ptr, c - sce->content_type->ptr);
+		}
+	}
+
 	for (m = 0; m < p->conf.compress->used; m++) {
 		data_string *compress_ds = (data_string *)p->conf.compress->data[m];
 
@@ -722,7 +732,8 @@ PHYSICALPATH_FUNC(mod_compress_physical) {
 			return HANDLER_GO_ON;
 		}
 
-		if (buffer_is_equal(compress_ds->value, sce->content_type)) {
+		if (buffer_is_equal(compress_ds->value, sce->content_type)
+		    || (content_type && buffer_is_equal(compress_ds->value, content_type))) {
 			/* mimetype found */
 			data_string *ds;
 

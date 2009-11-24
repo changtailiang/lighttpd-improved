@@ -1,4 +1,10 @@
-#define _GNU_SOURCE
+#include "server.h"
+#include "connections.h"
+#include "response.h"
+#include "connections.h"
+#include "log.h"
+
+#include "plugin.h"
 #include <sys/types.h>
 
 #include <fcntl.h>
@@ -9,13 +15,6 @@
 #include <errno.h>
 #include <time.h>
 
-#include "server.h"
-#include "connections.h"
-#include "response.h"
-#include "connections.h"
-#include "log.h"
-
-#include "plugin.h"
 #ifdef HAVE_FORK
 /* no need for waitpid if we don't have fork */
 #include <sys/wait.h>
@@ -139,9 +138,7 @@ static int mod_rrd_create_pipe(server *srv, plugin_data *p) {
 
 		args[i++] = p->conf.path_rrdtool_bin->ptr;
 		args[i++] = dash;
-		args[i++] = NULL;
-
-		openDevNull(STDERR_FILENO);
+		args[i  ] = NULL;
 
 		/* we don't need the client socket */
 		for (i = 3; i < 256; i++) {
@@ -240,11 +237,11 @@ static int mod_rrdtool_create_rrd(server *srv, plugin_data *p, plugin_config *s)
 					"not a regular file:", s->path_rrd);
 			return HANDLER_ERROR;
 		}
-	}
 
-	/* still create DB if it's empty file */
-	if (st.st_size > 0) {
-		return HANDLER_GO_ON;
+		/* still create DB if it's empty file */
+		if (st.st_size > 0) {
+			return HANDLER_GO_ON;
+		}
 	}
 
 	/* create a new one */
@@ -268,7 +265,7 @@ static int mod_rrdtool_create_rrd(server *srv, plugin_data *p, plugin_config *s)
 		"RRA:MIN:0.5:24:775 "
 		"RRA:MIN:0.5:288:797\n"));
 
-	if (-1 == (r = safe_write(p->write_fd, p->cmd->ptr, p->cmd->used - 1))) {
+	if (-1 == (safe_write(p->write_fd, p->cmd->ptr, p->cmd->used - 1))) {
 		log_error_write(srv, __FILE__, __LINE__, "ss",
 			"rrdtool-write: failed", strerror(errno));
 

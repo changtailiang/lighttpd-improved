@@ -46,9 +46,9 @@
        Addison-Wesley, 1993, pp 367-375
 */
 
+#include "splaytree.h"
 #include <stdlib.h>
 #include <assert.h>
-#include "splaytree.h"
 
 #define compare(i,j) ((i)-(j))
 /* This is the comparison.                                       */
@@ -61,12 +61,11 @@
  * size fields are maintained */
 splay_tree * splaytree_splay (splay_tree *t, int i) {
     splay_tree N, *l, *r, *y;
-    int comp, root_size, l_size, r_size;
+    int comp, l_size, r_size;
 
     if (t == NULL) return t;
     N.left = N.right = NULL;
     l = r = &N;
-    root_size = node_size(t);
     l_size = r_size = 0;
 
     for (;;) {

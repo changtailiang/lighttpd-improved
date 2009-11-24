@@ -1,13 +1,3 @@
-#include <sys/types.h>
-#include <unistd.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <string.h>
-#include <stdlib.h>
-#include <ctype.h>
-#include <assert.h>
-#include <signal.h>
-
 #include "buffer.h"
 #include "server.h"
 #include "keyvalue.h"
@@ -23,6 +13,16 @@
 
 #include "inet_ntop_cache.h"
 
+#include <sys/types.h>
+#include <unistd.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <string.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include <assert.h>
+#include <signal.h>
+
 #include <stdio.h>
 
 #ifdef HAVE_SYS_FILIO_H
@@ -32,10 +32,11 @@
 #include "sys-socket.h"
 
 #ifdef HAVE_SYS_UIO_H
-#include <sys/uio.h>
+# include <sys/uio.h>
 #endif
+
 #ifdef HAVE_SYS_WAIT_H
-#include <sys/wait.h>
+# include <sys/wait.h>
 #endif
 
 #include "version.h"
@@ -331,7 +332,20 @@ static handler_t scgi_handle_fdevent(void *s, void *ctx, int revents);
 
 int scgi_proclist_sort_down(server *srv, scgi_extension_host *host, scgi_proc *proc);
 
-
+static void reset_signals(void) {
+#ifdef SIGTTOU
+	signal(SIGTTOU, SIG_DFL);
+#endif
+#ifdef SIGTTIN
+	signal(SIGTTIN, SIG_DFL);
+#endif
+#ifdef SIGTSTP
+	signal(SIGTSTP, SIG_DFL);
+#endif
+	signal(SIGHUP, SIG_DFL);
+	signal(SIGPIPE, SIG_DFL);
+	signal(SIGUSR1, SIG_DFL);
+}
 
 static handler_ctx * handler_ctx_init() {
 	handler_ctx * hctx;
@@ -772,18 +786,14 @@ static int scgi_spawn_connection(server *srv,
 			env.used = 0;
 
 			if (scgi_fd != 0) {
-				close(0);
 				dup2(scgi_fd, 0);
 				close(scgi_fd);
-				scgi_fd = 0;
 			}
 
 			/* we don't need the client socket */
 			for (fd = 3; fd < 256; fd++) {
 				close(fd);
 			}
-
-			openDevNull(STDERR_FILENO);
 
 			/* build clean environment */
 			if (host->bin_env_copy->used) {
@@ -827,6 +837,8 @@ static int scgi_spawn_connection(server *srv,
 			b = buffer_init();
 			buffer_copy_string_len(b, CONST_STR_LEN("exec "));
 			buffer_append_string_buffer(b, host->bin_path);
+
+			reset_signals();
 
 			/* exec the cgi */
 			execle("/bin/sh", "sh", "-c", b->ptr, (char *)NULL, env.ptr);
@@ -2163,8 +2175,11 @@ static handler_t scgi_write_request(server *srv, handler_ctx *hctx) {
 	int ret;
 
 	/* sanity check */
-	if (!host ||
-	    ((!host->host->used || !host->port) && !host->unixsocket->used)) {
+	if (!host) {
+		log_error_write(srv, __FILE__, __LINE__, "s", "fatal error: host = NULL");
+		return HANDLER_ERROR;
+	}
+	if (((!host->host->used || !host->port) && !host->unixsocket->used)) {
 		log_error_write(srv, __FILE__, __LINE__, "sxddd",
 				"write-req: error",
 				host,
@@ -2299,8 +2314,8 @@ static handler_t scgi_write_request(server *srv, handler_ctx *hctx) {
 
 		chunkqueue_remove_finished_chunks(hctx->wb);
 
-		if (-1 == ret) {
-			if (errno == ENOTCONN) {
+		if (ret < 0) {
+			if (errno == ENOTCONN || ret == -2) {
 				/* the connection got dropped after accept()
 				 *
 				 * this is most of the time a PHP which dies
@@ -2325,24 +2340,17 @@ static handler_t scgi_write_request(server *srv, handler_ctx *hctx) {
 				 */
 
 				log_error_write(srv, __FILE__, __LINE__, "ssosd",
-						"[REPORT ME] connection was dropped after accept(). reconnect() denied:",
+						"connection was dropped after accept(). reconnect() denied:",
 						"write-offset:", hctx->wb->bytes_out,
 						"reconnect attempts:", hctx->reconnects);
 
 				return HANDLER_ERROR;
-			}
-
-			if ((errno != EAGAIN) &&
-			    (errno != EINTR)) {
-
+			} else {
+				/* -1 == ret => error on our side */
 				log_error_write(srv, __FILE__, __LINE__, "ssd",
-						"write failed:", strerror(errno), errno);
+					"write failed:", strerror(errno), errno);
 
 				return HANDLER_ERROR;
-			} else {
-				fdevent_event_add(srv->ev, &(hctx->fde_ndx), hctx->fd, FDEVENT_OUT);
-
-				return HANDLER_WAIT_FOR_EVENT;
 			}
 		}
 
@@ -2469,12 +2477,10 @@ SUBREQUEST_FUNC(mod_scgi_handle_subrequest) {
 }
 
 static handler_t scgi_connection_close(server *srv, handler_ctx *hctx) {
-	plugin_data *p;
 	connection  *con;
 
 	if (NULL == hctx) return HANDLER_GO_ON;
 
-	p    = hctx->plugin_data;
 	con  = hctx->remote_conn;
 
 	log_error_write(srv, __FILE__, __LINE__, "ssdsd",
@@ -2724,27 +2730,29 @@ static handler_t scgi_check_extension(server *srv, connection *con, void *p_d, i
 	/* check if extension matches */
 	for (k = 0; k < p->conf.exts->used; k++) {
 		size_t ct_len;
+		scgi_extension *ext = p->conf.exts->exts[k];
 
-		extension = p->conf.exts->exts[k];
+		if (ext->key->used == 0) continue;
 
-		if (extension->key->used == 0) continue;
-
-		ct_len = extension->key->used - 1;
+		ct_len = ext->key->used - 1;
 
 		if (s_len < ct_len) continue;
 
 		/* check extension in the form "/scgi_pattern" */
-		if (*(extension->key->ptr) == '/') {
-			if (strncmp(fn->ptr, extension->key->ptr, ct_len) == 0)
+		if (*(ext->key->ptr) == '/') {
+			if (strncmp(fn->ptr, ext->key->ptr, ct_len) == 0) {
+				extension = ext;
 				break;
-		} else if (0 == strncmp(fn->ptr + s_len - ct_len, extension->key->ptr, ct_len)) {
+			}
+		} else if (0 == strncmp(fn->ptr + s_len - ct_len, ext->key->ptr, ct_len)) {
 			/* check extension in the form ".fcg" */
+			extension = ext;
 			break;
 		}
 	}
 
 	/* extension doesn't match */
-	if (k == p->conf.exts->used) {
+	if (NULL == extension) {
 		return HANDLER_GO_ON;
 	}
 

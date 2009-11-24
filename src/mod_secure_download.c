@@ -1,16 +1,12 @@
-#include <ctype.h>
-#include <stdlib.h>
-#include <string.h>
-
 #include "base.h"
 #include "log.h"
 #include "buffer.h"
 
 #include "plugin.h"
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
+#include <ctype.h>
+#include <stdlib.h>
+#include <string.h>
 
 #ifdef USE_OPENSSL
 # include <openssl/md5.h>
@@ -37,7 +33,7 @@ typedef struct {
 	buffer *secret;
 	buffer *uri_prefix;
 
-	unsigned short timeout;
+	unsigned int timeout;
 } plugin_config;
 
 typedef struct {
@@ -99,7 +95,7 @@ SETDEFAULTS_FUNC(mod_secdownload_set_defaults) {
 		{ "secdownload.secret",            NULL, T_CONFIG_STRING, T_CONFIG_SCOPE_CONNECTION },       /* 0 */
 		{ "secdownload.document-root",     NULL, T_CONFIG_STRING, T_CONFIG_SCOPE_CONNECTION },       /* 1 */
 		{ "secdownload.uri-prefix",        NULL, T_CONFIG_STRING, T_CONFIG_SCOPE_CONNECTION },       /* 2 */
-		{ "secdownload.timeout",           NULL, T_CONFIG_SHORT, T_CONFIG_SCOPE_CONNECTION },        /* 3 */
+		{ "secdownload.timeout",           NULL, T_CONFIG_INT, T_CONFIG_SCOPE_CONNECTION },        /* 3 */
 		{ NULL,                            NULL, T_CONFIG_UNSET, T_CONFIG_SCOPE_UNSET }
 	};
 
@@ -245,8 +241,8 @@ URIHANDLER_FUNC(mod_secdownload_uri_handler) {
 	}
 
 	/* timed-out */
-	if ( (srv->cur_ts > ts && srv->cur_ts - ts > p->conf.timeout) ||
-	     (srv->cur_ts < ts && ts - srv->cur_ts > p->conf.timeout) ) {
+	if ( (srv->cur_ts > ts && (unsigned int) (srv->cur_ts - ts) > p->conf.timeout) ||
+	     (srv->cur_ts < ts && (unsigned int) (ts - srv->cur_ts) > p->conf.timeout) ) {
 		/* "Gone" as the url will never be valid again instead of "408 - Timeout" where the request may be repeated */
 		con->http_status = 410;
 

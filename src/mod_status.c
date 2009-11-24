@@ -1,4 +1,13 @@
-#define _GNU_SOURCE
+#include "server.h"
+#include "connections.h"
+#include "response.h"
+#include "connections.h"
+#include "log.h"
+
+#include "plugin.h"
+
+#include "inet_ntop_cache.h"
+
 #include <sys/types.h>
 
 #include <fcntl.h>
@@ -9,15 +18,6 @@
 #include <time.h>
 #include <stdio.h>
 
-#include "server.h"
-#include "connections.h"
-#include "response.h"
-#include "connections.h"
-#include "log.h"
-
-#include "plugin.h"
-
-#include "inet_ntop_cache.h"
 #include "version.h"
 
 typedef struct {
@@ -438,7 +438,7 @@ static handler_t mod_status_handle_server_status_html(server *srv, connection *c
 
 	buffer_append_string_len(b, CONST_STR_LEN(
 		"<hr />\n<pre><b>legend</b>\n"
-		". = connect, C = close, E = hard error\n"
+		". = connect, C = close, E = hard error, k = keep-alive\n"
 		"r = read, R = read-POST, W = write, h = handle-request\n"
 		"q = request-start,  Q = request-end\n"
 		"s = response-start, S = response-end\n"));
@@ -449,7 +449,13 @@ static handler_t mod_status_handle_server_status_html(server *srv, connection *c
 
 	for (j = 0; j < srv->conns->used; j++) {
 		connection *c = srv->conns->ptr[j];
-		const char *state = connection_get_short_state(c->state);
+		const char *state;
+
+		if (CON_STATE_READ == c->state && c->request.orig_uri->used > 0) {
+			state = "k";
+		} else {
+			state = connection_get_short_state(c->state);
+		}
 
 		buffer_append_string_len(b, state, 1);
 
@@ -497,7 +503,11 @@ static handler_t mod_status_handle_server_status_html(server *srv, connection *c
 
 		buffer_append_string_len(b, CONST_STR_LEN("</td><td class=\"string\">"));
 
-		buffer_append_string(b, connection_get_state(c->state));
+		if (CON_STATE_READ == c->state && c->request.orig_uri->used > 0) {
+			buffer_append_string_len(b, CONST_STR_LEN("keep-alive"));
+		} else {
+			buffer_append_string(b, connection_get_state(c->state));
+		}
 
 		buffer_append_string_len(b, CONST_STR_LEN("</td><td class=\"int\">"));
 
@@ -611,10 +621,10 @@ static handler_t mod_status_handle_server_status_text(server *srv, connection *c
 }
 
 static handler_t mod_status_handle_server_statistics(server *srv, connection *con, void *p_d) {
-	plugin_data *p = p_d;
-	buffer *b = p->module_list;
+	buffer *b;
 	size_t i;
 	array *st = srv->status;
+	UNUSED(p_d);
 
 	if (0 == st->used) {
 		/* we have nothing to send */

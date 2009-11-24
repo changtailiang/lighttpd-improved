@@ -1,13 +1,3 @@
-#include <sys/types.h>
-
-#include <ctype.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <string.h>
-#include <errno.h>
-#include <time.h>
-#include <unistd.h>
-
 #include "base.h"
 #include "log.h"
 #include "buffer.h"
@@ -24,16 +14,26 @@
 
 #include "sys-socket.h"
 
+#include <sys/types.h>
+
+#include <ctype.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <errno.h>
+#include <time.h>
+#include <unistd.h>
+
 #ifdef HAVE_PWD_H
-#include <pwd.h>
+# include <pwd.h>
 #endif
 
 #ifdef HAVE_FORK
-#include <sys/wait.h>
+# include <sys/wait.h>
 #endif
 
 #ifdef HAVE_SYS_FILIO_H
-#include <sys/filio.h>
+# include <sys/filio.h>
 #endif
 
 #include "etag.h"
@@ -362,7 +362,8 @@ static int process_ssi_stmt(server *srv, connection *con, plugin_data *p,
 	switch(ssicmd) {
 	case SSI_ECHO: {
 		/* echo */
-		int var = 0, enc = 0;
+		int var = 0;
+		/* int enc = 0; */
 		const char *var_val = NULL;
 		stat_cache_entry *sce = NULL;
 
@@ -381,6 +382,7 @@ static int process_ssi_stmt(server *srv, connection *con, plugin_data *p,
 			{ NULL, SSI_ECHO_UNSET }
 		};
 
+/*
 		struct {
 			const char *var;
 			enum { SSI_ENC_UNSET, SSI_ENC_URL, SSI_ENC_NONE, SSI_ENC_ENTITY } type;
@@ -391,6 +393,7 @@ static int process_ssi_stmt(server *srv, connection *con, plugin_data *p,
 
 			{ NULL, SSI_ENC_UNSET }
 		};
+*/
 
 		for (i = 2; i < n; i += 2) {
 			if (0 == strcmp(l[i], "var")) {
@@ -405,6 +408,7 @@ static int process_ssi_stmt(server *srv, connection *con, plugin_data *p,
 					}
 				}
 			} else if (0 == strcmp(l[i], "encoding")) {
+/*
 				int j;
 
 				for (j = 0; encvars[j].var; j++) {
@@ -413,6 +417,7 @@ static int process_ssi_stmt(server *srv, connection *con, plugin_data *p,
 						break;
 					}
 				}
+*/
 			} else {
 				log_error_write(srv, __FILE__, __LINE__, "sss",
 						"ssi: unknow attribute for ",

@@ -1,13 +1,3 @@
-#include <sys/stat.h>
-
-#include <stdlib.h>
-#include <stdio.h>
-#include <unistd.h>
-#include <errno.h>
-#include <string.h>
-#include <fcntl.h>
-#include <assert.h>
-
 #include "buffer.h"
 #include "server.h"
 #include "log.h"
@@ -25,6 +15,16 @@
 #include "plugin.h"
 
 #include "inet_ntop_cache.h"
+
+#include <sys/stat.h>
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <errno.h>
+#include <string.h>
+#include <fcntl.h>
+#include <assert.h>
 
 #ifdef USE_OPENSSL
 # include <openssl/ssl.h>
@@ -738,6 +738,9 @@ connection *connection_init(server *srv) {
 	CLEAN(server_name);
 	CLEAN(error_handler);
 	CLEAN(dst_addr_buf);
+#if defined USE_OPENSSL && ! defined OPENSSL_NO_TLSEXT
+	CLEAN(tlsext_server_name);
+#endif
 
 #undef CLEAN
 	con->write_queue = chunkqueue_init();
@@ -804,6 +807,9 @@ void connections_free(server *srv) {
 		CLEAN(server_name);
 		CLEAN(error_handler);
 		CLEAN(dst_addr_buf);
+#if defined USE_OPENSSL && ! defined OPENSSL_NO_TLSEXT
+		CLEAN(tlsext_server_name);
+#endif
 #undef CLEAN
 		free(con->plugin_ctx);
 		free(con->cond_cache);
@@ -859,13 +865,13 @@ int connection_reset(server *srv, connection *con) {
 	CLEAN(request.pathinfo);
 	CLEAN(request.request);
 
-	CLEAN(request.orig_uri);
+	/* CLEAN(request.orig_uri); */
 
 	CLEAN(uri.scheme);
-	CLEAN(uri.authority);
-	CLEAN(uri.path);
+	/* CLEAN(uri.authority); */
+	/* CLEAN(uri.path); */
 	CLEAN(uri.path_raw);
-	CLEAN(uri.query);
+	/* CLEAN(uri.query); */
 
 	CLEAN(physical.doc_root);
 	CLEAN(physical.path);
@@ -878,6 +884,9 @@ int connection_reset(server *srv, connection *con) {
 	CLEAN(authed_user);
 	CLEAN(server_name);
 	CLEAN(error_handler);
+#if defined USE_OPENSSL && ! defined OPENSSL_NO_TLSEXT
+	CLEAN(tlsext_server_name);
+#endif
 #undef CLEAN
 
 #define CLEAN(x) \
@@ -1261,7 +1270,7 @@ static handler_t connection_handle_fdevent(void *s, void *context, int revents) 
 		/* FIXME: revents = 0x19 still means that we should read from the queue */
 		if (revents & FDEVENT_HUP) {
 			if (con->state == CON_STATE_CLOSE) {
-				con->close_timeout_ts = srv->cur_ts - 2;
+				con->close_timeout_ts = srv->cur_ts - (HTTP_LINGER_TIMEOUT+1);
 			} else {
 				/* sigio reports the wrong event here
 				 *
@@ -1321,15 +1330,19 @@ static handler_t connection_handle_fdevent(void *s, void *context, int revents) 
 
 		if (b > 0) {
 			char buf[1024];
+#if 0
 			log_error_write(srv, __FILE__, __LINE__, "sdd",
 					"CLOSE-read()", con->fd, b);
+#endif
 
 			/* */
 			read(con->fd, buf, sizeof(buf));
 		} else {
-			/* nothing to read */
-
-			con->close_timeout_ts = srv->cur_ts - 2;
+			/* nothing to read - yet.  But that doesn't
+			 * mean something won't show up in our buffers
+			 * sometime soon, so we can't quite until
+			 * poll() gives us the HUP notification.
+			 */
 		}
 	}
 
@@ -1418,6 +1431,9 @@ connection *connection_accept(server *srv, server_socket *srv_socket) {
 				return NULL;
 			}
 
+#ifndef OPENSSL_NO_TLSEXT
+			SSL_set_app_data(con->ssl, con);
+#endif
 			SSL_set_accept_state(con->ssl);
 			con->conf.is_ssl=1;
 
@@ -1477,6 +1493,11 @@ int connection_state_machine(server *srv, connection *con) {
 				log_error_write(srv, __FILE__, __LINE__, "sds",
 						"state for fd", con->fd, connection_get_state(con->state));
 			}
+
+			buffer_reset(con->uri.authority);
+			buffer_reset(con->uri.path);
+			buffer_reset(con->uri.query);
+			buffer_reset(con->request.orig_uri);
 
 			if (http_request_parse(srv, con)) {
 				/* we have to read some data from the POST request */
@@ -1641,7 +1662,12 @@ int connection_state_machine(server *srv, connection *con) {
 					}
 				}
 #endif
-				connection_close(srv, con);
+				if ((0 == shutdown(con->fd, SHUT_WR))) {
+					con->close_timeout_ts = srv->cur_ts;
+					connection_set_state(srv, con, CON_STATE_CLOSE);
+				} else {
+					connection_close(srv, con);
+				}
 
 				srv->con_closed++;
 			}
@@ -1666,28 +1692,33 @@ int connection_state_machine(server *srv, connection *con) {
 						"state for fd", con->fd, connection_get_state(con->state));
 			}
 
-			if (con->keep_alive) {
-				if (ioctl(con->fd, FIONREAD, &b)) {
-					log_error_write(srv, __FILE__, __LINE__, "ss",
-							"ioctl() failed", strerror(errno));
-				}
-				if (b > 0) {
-					char buf[1024];
-					log_error_write(srv, __FILE__, __LINE__, "sdd",
-							"CLOSE-read()", con->fd, b);
+			/* we have to do the linger_on_close stuff regardless
+			 * of con->keep_alive; even non-keepalive sockets may
+			 * still have unread data, and closing before reading
+			 * it will make the client not see all our output.
+			 */
+			if (ioctl(con->fd, FIONREAD, &b)) {
+				log_error_write(srv, __FILE__, __LINE__, "ss",
+					"ioctl() failed", strerror(errno));
+			}
+			if (b > 0) {
+				char buf[1024];
+#if 0
+				log_error_write(srv, __FILE__, __LINE__, "sdd",
+						"CLOSE-read()", con->fd, b);
+#endif
 
-					/* */
-					read(con->fd, buf, sizeof(buf));
-				} else {
-					/* nothing to read */
-
-					con->close_timeout_ts = srv->cur_ts - 2;
-				}
+				/* */
+				read(con->fd, buf, sizeof(buf));
 			} else {
-				con->close_timeout_ts = srv->cur_ts - 2;
+				/* nothing to read - yet.  But that doesn't
+				 * mean something won't show up in our buffers
+				 * sometime soon, so we can't quite until
+				 * poll() gives us the HUP notification.
+				 */
 			}
 
-			if (srv->cur_ts - con->close_timeout_ts > 1) {
+			if (srv->cur_ts - con->close_timeout_ts > HTTP_LINGER_TIMEOUT) {
 				connection_close(srv, con);
 
 				if (srv->srvconf.log_state_handling) {
@@ -1802,7 +1833,7 @@ int connection_state_machine(server *srv, connection *con) {
 				case HANDLER_FINISHED:
 					break;
 				default:
-					log_error_write(srv, __FILE__, __LINE__, "");
+					log_error_write(srv, __FILE__, __LINE__, "sd", "unhandling return value", r);
 					break;
 				}
 				break;
@@ -1811,8 +1842,7 @@ int connection_state_machine(server *srv, connection *con) {
 			connection_reset(srv, con);
 
 			/* close the connection */
-			if ((con->keep_alive == 1) &&
-			    (0 == shutdown(con->fd, SHUT_WR))) {
+			if ((0 == shutdown(con->fd, SHUT_WR))) {
 				con->close_timeout_ts = srv->cur_ts;
 				connection_set_state(srv, con, CON_STATE_CLOSE);
 

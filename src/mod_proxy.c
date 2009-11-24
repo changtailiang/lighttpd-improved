@@ -1,24 +1,3 @@
-/* based on patch 
- * 	http://trac.lighttpd.net/trac/attachment/wiki/Release-1.4.10-patches/lighttpd-1.4.10-mod_proxy.diff.bz2
- *
- * new module option:
- * proxy.worked-with-mod-cache, default to disable. when enabled, mod_proxy will 
- *    take care of con->use_cache_file and set con->write_cache_file properly.
- *
- * note: mod_proxy isn't effective enough, wait for 1.5's mod_proxy.
- *
- * version 2006.10.23 14:51 by qhy
- */
-#include <sys/types.h>
-
-#include <unistd.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <string.h>
-#include <stdlib.h>
-#include <ctype.h>
-#include <assert.h>
-
 #include "buffer.h"
 #include "server.h"
 #include "keyvalue.h"
@@ -34,6 +13,16 @@
 
 #include "inet_ntop_cache.h"
 #include "crc32.h"
+
+#include <sys/types.h>
+
+#include <unistd.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <string.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include <assert.h>
 
 #include <stdio.h>
 
@@ -1015,12 +1004,15 @@ static handler_t proxy_write_request(server *srv, handler_ctx *hctx) {
 
 	switch(hctx->state) {
 	case PROXY_STATE_INIT:
+#if defined(HAVE_IPV6) && defined(HAVE_INET_PTON)
 		if (strstr(host->host->ptr,":")) {
 		    if (-1 == (hctx->fd = socket(AF_INET6, SOCK_STREAM, 0))) {
 			log_error_write(srv, __FILE__, __LINE__, "ss", "socket failed: ", strerror(errno));
 			return HANDLER_ERROR;
 		    }
-		} else {
+		} else
+#endif
+		{
 		    if (-1 == (hctx->fd = socket(AF_INET, SOCK_STREAM, 0))) {
 			log_error_write(srv, __FILE__, __LINE__, "ss", "socket failed: ", strerror(errno));
 			return HANDLER_ERROR;
@@ -1108,7 +1100,7 @@ static handler_t proxy_write_request(server *srv, handler_ctx *hctx) {
 
 		chunkqueue_remove_finished_chunks(hctx->wb);
 
-		if (-1 == ret) {
+		if (-1 == ret) { /* error on our side */
 			if (errno == EAGAIN || errno == EINTR) {
 				fdevent_event_add(srv->ev, &(hctx->fde_ndx), hctx->fd, FDEVENT_OUT);
 
@@ -1116,12 +1108,15 @@ static handler_t proxy_write_request(server *srv, handler_ctx *hctx) {
 			} else {
 				log_error_write(srv, __FILE__, __LINE__, "ssd", "write failed:", strerror(errno), errno);
 				
-				return HANDLER_ERROR;
+				return HANDLER_ERROR; /* FIXME */
 			}
+		} else if (-2 == ret) { /* remote close */
+			log_error_write(srv, __FILE__, __LINE__, "ssd", "write failed, remote connection close:", strerror(errno), errno);
+
+			return HANDLER_WAIT_FOR_EVENT;
 		}
 
 		if (hctx->wb->bytes_out == hctx->wb->bytes_in) {
-			/* send request to backend server successfully */
 			proxy_set_state(srv, hctx, PROXY_STATE_READ);
 
 			fdevent_event_del(srv->ev, &(hctx->fde_ndx), hctx->fd);
@@ -1376,26 +1371,27 @@ static handler_t mod_proxy_check_extension(server *srv, connection *con, void *p
 
 	/* check if extension matches */
 	for (k = 0; k < p->conf.extensions->used; k++) {
+		data_array *ext = NULL;
 		size_t ct_len;
 
-		extension = (data_array *)p->conf.extensions->data[k];
+		ext = (data_array *)p->conf.extensions->data[k];
 
-		if (extension->key->used == 0) continue;
+		if (ext->key->used == 0) continue;
 
-		ct_len = extension->key->used - 1;
+		ct_len = ext->key->used - 1;
 
 		if (s_len < ct_len) continue;
 
 		/* check extension in the form "/proxy_pattern" */
 		if (*(extension->key->ptr) == '/' && strncmp(fn->ptr, extension->key->ptr, ct_len) == 0) {
-				break;
+			break;
 		} else if (0 == strncmp(fn->ptr + s_len - ct_len, extension->key->ptr, ct_len)) {
 			/* check extension in the form ".fcg" */
 			break;
 		}
 	}
 
-	if (k == p->conf.extensions->used) {
+	if (NULL == extension) {
 		return HANDLER_GO_ON;
 	}
 
@@ -1403,7 +1399,7 @@ static handler_t mod_proxy_check_extension(server *srv, connection *con, void *p
 		log_error_write(srv, __FILE__, __LINE__,  "s", "proxy - ext found");
 	}
 
-		/* init handler-context */
+	/* init handler-context */
 	if (con->plugin_ctx[p->id]) {
 		hctx = con->plugin_ctx[p->id];
 	} else {

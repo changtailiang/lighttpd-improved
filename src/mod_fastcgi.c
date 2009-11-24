@@ -1,13 +1,3 @@
-#include <sys/types.h>
-#include <unistd.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <string.h>
-#include <stdlib.h>
-#include <ctype.h>
-#include <assert.h>
-#include <signal.h>
-
 #include "buffer.h"
 #include "server.h"
 #include "keyvalue.h"
@@ -25,15 +15,26 @@
 #include "stat_cache.h"
 #include "status_counter.h"
 
+#include <sys/types.h>
+#include <unistd.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <string.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include <assert.h>
+#include <signal.h>
+
 #ifdef HAVE_FASTCGI_FASTCGI_H
-#include <fastcgi/fastcgi.h>
+# include <fastcgi/fastcgi.h>
 #else
-#ifdef HAVE_FASTCGI_H
-#include <fastcgi.h>
-#else
-#include "fastcgi.h"
-#endif
+# ifdef HAVE_FASTCGI_H
+#  include <fastcgi.h>
+# else
+#  include "fastcgi.h"
+# endif
 #endif /* HAVE_FASTCGI_FASTCGI_H */
+
 #include <stdio.h>
 
 #ifdef HAVE_SYS_FILIO_H
@@ -122,22 +123,9 @@ typedef struct {
 	 *
 	 */
 
-	unsigned short min_procs;
 	unsigned short max_procs;
 	size_t num_procs;    /* how many procs are started */
-	size_t active_procs; /* how many of them are really running */
-
-	unsigned short max_load_per_proc;
-
-	/*
-	 * kick the process from the list if it was not
-	 * used for idle_timeout until min_procs is
-	 * reached. this helps to get the processlist
-	 * small again we had a small peak load.
-	 *
-	 */
-
-	unsigned short idle_timeout;
+	size_t active_procs; /* how many of them are really running, i.e. state = PROC_STATE_RUNNING */
 
 	/*
 	 * time after a disabled remote connection is tried to be re-enabled
@@ -386,6 +374,21 @@ typedef struct {
 /* ok, we need a prototype */
 static handler_t fcgi_handle_fdevent(void *s, void *ctx, int revents);
 
+static void reset_signals(void) {
+#ifdef SIGTTOU
+	signal(SIGTTOU, SIG_DFL);
+#endif
+#ifdef SIGTTIN
+	signal(SIGTTIN, SIG_DFL);
+#endif
+#ifdef SIGTSTP
+	signal(SIGTSTP, SIG_DFL);
+#endif
+	signal(SIGHUP, SIG_DFL);
+	signal(SIGPIPE, SIG_DFL);
+	signal(SIGUSR1, SIG_DFL);
+}
+
 static void fastcgi_status_copy_procname(buffer *b, fcgi_extension_host *host, fcgi_proc *proc) {
 	buffer_copy_string_len(b, CONST_STR_LEN("fastcgi.backend."));
 	buffer_append_string_buffer(b, host->id);
@@ -440,6 +443,21 @@ static void fcgi_host_reset(server *srv, handler_ctx *hctx) {
 	status_counter_set(srv, CONST_BUF_LEN(p->statuskey), hctx->host->load);
 
 	hctx->host = NULL;
+}
+
+static void fcgi_host_disable(server *srv, handler_ctx *hctx) {
+	plugin_data *p    = hctx->plugin_data;
+
+	if (hctx->host->disable_time || hctx->proc->is_local) {
+		if (hctx->proc->state == PROC_STATE_RUNNING) hctx->host->active_procs--;
+		hctx->proc->disabled_until = srv->cur_ts + hctx->host->disable_time;
+		hctx->proc->state = hctx->proc->is_local ? PROC_STATE_DIED_WAIT_FOR_PID : PROC_STATE_DIED;
+
+		if (p->conf.debug) {
+			log_error_write(srv, __FILE__, __LINE__, "sds",
+				"backend disabled for", hctx->host->disable_time, "seconds");
+		}
+	}
 }
 
 static int fastcgi_status_init(server *srv, buffer *b, fcgi_extension_host *host, fcgi_proc *proc) {
@@ -995,8 +1013,6 @@ static int fcgi_spawn_connection(server *srv,
 				close(fcgi_fd);
 			}
 
-			openDevNull(STDERR_FILENO);
-
 			/* we don't need the client socket */
 			for (i = 3; i < 256; i++) {
 				close(i);
@@ -1056,6 +1072,7 @@ static int fcgi_spawn_connection(server *srv,
 				*c = '/';
 			}
 
+			reset_signals();
 
 			/* exec the cgi */
 			execve(arg.ptr[0], arg.ptr, env.ptr);
@@ -1240,20 +1257,17 @@ SETDEFAULTS_FUNC(mod_fastcgi_set_defaults) {
 
 						{ "check-local",       NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION },      /* 5 */
 						{ "port",              NULL, T_CONFIG_SHORT, T_CONFIG_SCOPE_CONNECTION },        /* 6 */
-						{ "min-procs-not-working",         NULL, T_CONFIG_SHORT, T_CONFIG_SCOPE_CONNECTION },        /* 7 this is broken for now */
-						{ "max-procs",         NULL, T_CONFIG_SHORT, T_CONFIG_SCOPE_CONNECTION },        /* 8 */
-						{ "max-load-per-proc", NULL, T_CONFIG_SHORT, T_CONFIG_SCOPE_CONNECTION },        /* 9 */
-						{ "idle-timeout",      NULL, T_CONFIG_SHORT, T_CONFIG_SCOPE_CONNECTION },        /* 10 */
-						{ "disable-time",      NULL, T_CONFIG_SHORT, T_CONFIG_SCOPE_CONNECTION },        /* 11 */
+						{ "max-procs",         NULL, T_CONFIG_SHORT, T_CONFIG_SCOPE_CONNECTION },        /* 7 */
+						{ "disable-time",      NULL, T_CONFIG_SHORT, T_CONFIG_SCOPE_CONNECTION },        /* 8 */
 
-						{ "bin-environment",   NULL, T_CONFIG_ARRAY, T_CONFIG_SCOPE_CONNECTION },        /* 12 */
-						{ "bin-copy-environment", NULL, T_CONFIG_ARRAY, T_CONFIG_SCOPE_CONNECTION },     /* 13 */
+						{ "bin-environment",   NULL, T_CONFIG_ARRAY, T_CONFIG_SCOPE_CONNECTION },        /* 9 */
+						{ "bin-copy-environment", NULL, T_CONFIG_ARRAY, T_CONFIG_SCOPE_CONNECTION },     /* 10 */
 
-						{ "broken-scriptfilename", NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION },  /* 14 */
-						{ "allow-x-send-file",  NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION },      /* 15 */
-						{ "strip-request-uri",  NULL, T_CONFIG_STRING, T_CONFIG_SCOPE_CONNECTION },      /* 16 */
-						{ "kill-signal",        NULL, T_CONFIG_SHORT, T_CONFIG_SCOPE_CONNECTION },      /* 17 */
-						{ "fix-root-scriptname",   NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION },  /* 18 */
+						{ "broken-scriptfilename", NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION },  /* 11 */
+						{ "allow-x-send-file",  NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION },     /* 12 */
+						{ "strip-request-uri",  NULL, T_CONFIG_STRING, T_CONFIG_SCOPE_CONNECTION },      /* 13 */
+						{ "kill-signal",        NULL, T_CONFIG_SHORT, T_CONFIG_SCOPE_CONNECTION },       /* 14 */
+						{ "fix-root-scriptname",   NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION },  /* 15 */
 
 						{ NULL,                NULL, T_CONFIG_UNSET, T_CONFIG_SCOPE_UNSET }
 					};
@@ -1272,12 +1286,9 @@ SETDEFAULTS_FUNC(mod_fastcgi_set_defaults) {
 					buffer_copy_string_buffer(host->id, da_host->key);
 
 					host->check_local  = 1;
-					host->min_procs    = 4;
 					host->max_procs    = 4;
-					host->max_load_per_proc = 1;
-					host->idle_timeout = 60;
 					host->mode = FCGI_RESPONDER;
-					host->disable_time = 60;
+					host->disable_time = 1;
 					host->break_scriptfilename_for_php = 0;
 					host->allow_xsendfile = 0; /* handle X-LIGHTTPD-send-file */
 					host->kill_signal = SIGTERM;
@@ -1291,19 +1302,16 @@ SETDEFAULTS_FUNC(mod_fastcgi_set_defaults) {
 
 					fcv[5].destination = &(host->check_local);
 					fcv[6].destination = &(host->port);
-					fcv[7].destination = &(host->min_procs);
-					fcv[8].destination = &(host->max_procs);
-					fcv[9].destination = &(host->max_load_per_proc);
-					fcv[10].destination = &(host->idle_timeout);
-					fcv[11].destination = &(host->disable_time);
+					fcv[7].destination = &(host->max_procs);
+					fcv[8].destination = &(host->disable_time);
 
-					fcv[12].destination = host->bin_env;
-					fcv[13].destination = host->bin_env_copy;
-					fcv[14].destination = &(host->break_scriptfilename_for_php);
-					fcv[15].destination = &(host->allow_xsendfile);
-					fcv[16].destination = host->strip_request_uri;
-					fcv[17].destination = &(host->kill_signal);
-					fcv[18].destination = &(host->fix_root_path_name);
+					fcv[9].destination = host->bin_env;
+					fcv[10].destination = host->bin_env_copy;
+					fcv[11].destination = &(host->break_scriptfilename_for_php);
+					fcv[12].destination = &(host->allow_xsendfile);
+					fcv[13].destination = host->strip_request_uri;
+					fcv[14].destination = &(host->kill_signal);
+					fcv[15].destination = &(host->fix_root_path_name);
 
 					if (0 != config_insert_values_internal(srv, da_host->value, fcv)) {
 						return HANDLER_ERROR;
@@ -1360,23 +1368,16 @@ SETDEFAULTS_FUNC(mod_fastcgi_set_defaults) {
 						/* a local socket + self spawning */
 						size_t pno;
 
-						/* HACK:  just to make sure the adaptive spawing is disabled */
-						host->min_procs = host->max_procs;
-
-						if (host->min_procs > host->max_procs) host->max_procs = host->min_procs;
-						if (host->max_load_per_proc < 1) host->max_load_per_proc = 0;
-
 						if (s->debug) {
-							log_error_write(srv, __FILE__, __LINE__, "ssbsdsbsdsd",
+							log_error_write(srv, __FILE__, __LINE__, "ssbsdsbsd",
 									"--- fastcgi spawning local",
 									"\n\tproc:", host->bin_path,
 									"\n\tport:", host->port,
 									"\n\tsocket", host->unixsocket,
-									"\n\tmin-procs:", host->min_procs,
 									"\n\tmax-procs:", host->max_procs);
 						}
 
-						for (pno = 0; pno < host->min_procs; pno++) {
+						for (pno = 0; pno < host->max_procs; pno++) {
 							fcgi_proc *proc;
 
 							proc = fastcgi_process_init();
@@ -1396,7 +1397,7 @@ SETDEFAULTS_FUNC(mod_fastcgi_set_defaults) {
 										"--- fastcgi spawning",
 										"\n\tport:", host->port,
 										"\n\tsocket", host->unixsocket,
-										"\n\tcurrent:", pno, "/", host->min_procs);
+										"\n\tcurrent:", pno, "/", host->max_procs);
 							}
 
 							if (fcgi_spawn_connection(srv, p, host, proc)) {
@@ -1431,7 +1432,6 @@ SETDEFAULTS_FUNC(mod_fastcgi_set_defaults) {
 
 						host->first = proc;
 
-						host->min_procs = 1;
 						host->max_procs = 1;
 					}
 
@@ -1642,16 +1642,8 @@ static int fcgi_header(FCGI_Header * header, unsigned char type, size_t request_
 
 	return 0;
 }
-/**
- *
- * returns
- *   -1 error
- *    0 connected
- *    1 not connected yet
- */
 
 typedef enum {
-	CONNECTION_UNSET,
 	CONNECTION_OK,
 	CONNECTION_DELAYED, /* retry after event, take same host */
 	CONNECTION_OVERLOADED, /* disable for 1 second, take another backend */
@@ -1691,7 +1683,7 @@ static connection_result_t fcgi_establish_connection(server *srv, handler_ctx *h
 			buffer_append_string_buffer(proc->connection_name, proc->unixsocket);
 		}
 #else
-		return -1;
+		return CONNECTION_DEAD;
 #endif
 	} else {
 		fcgi_addr_in.sin_family = AF_INET;
@@ -1701,7 +1693,7 @@ static connection_result_t fcgi_establish_connection(server *srv, handler_ctx *h
 						"converting IP address failed for", host->host,
 						"\nBe sure to specify an IP address here");
 	
-				return -1;
+				return CONNECTION_DEAD;
 			}
 		} else {
 			fcgi_addr_in.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
@@ -2230,6 +2222,8 @@ static int fcgi_response_parse(server *srv, connection *con, plugin_data *p, buf
 
 	handler_ctx *hctx = con->plugin_ctx[p->id];
 	fcgi_extension_host *host= hctx->host;
+	int have_sendfile2 = 0;
+	off_t sendfile2_content_length = 0;
 
 	UNUSED(srv);
 
@@ -2239,7 +2233,7 @@ static int fcgi_response_parse(server *srv, connection *con, plugin_data *p, buf
 	for (s = p->parse_response->ptr; NULL != (ns = strchr(s, '\n')); s = ns + 1) {
 		char *key, *value;
 		int key_len;
-		data_string *ds;
+		data_string *ds = NULL;
 
 		/* a good day. Someone has read the specs and is sending a \r\n to us */
 
@@ -2302,6 +2296,79 @@ static int fcgi_response_parse(server *srv, connection *con, plugin_data *p, buf
 				con->parsed_response |= HTTP_CONNECTION;
 			}
 			break;
+		case 11:
+			if (host->allow_xsendfile && 0 == strncasecmp(key, "X-Sendfile2", key_len)&& hctx->send_content_body) {
+				char *pos = value;
+				have_sendfile2 = 1;
+
+				while (*pos) {
+					char *filename, *range;
+					stat_cache_entry *sce;
+					off_t begin_range, end_range, range_len;
+
+					while (' ' == *pos) pos++;
+					if (!*pos) break;
+
+					filename = pos;
+					if (NULL == (range = strchr(pos, ' '))) {
+						/* missing range */
+						return 1;
+					}
+					buffer_copy_string_len(srv->tmp_buf, filename, range - filename);
+
+					/* find end of range */
+					for (pos = ++range; *pos && *pos != ' ' && *pos != ','; pos++) ;
+
+					buffer_urldecode_path(srv->tmp_buf);
+					if (HANDLER_ERROR == stat_cache_get_entry(srv, con, srv->tmp_buf, &sce)) {
+						if (p->conf.debug) {
+							log_error_write(srv, __FILE__, __LINE__, "sb",
+								"send-file error: couldn't get stat_cache entry for X-Sendfile2:",
+								srv->tmp_buf);
+						}
+						return 1;
+					} else if (!S_ISREG(sce->st.st_mode)) {
+						if (p->conf.debug) {
+							log_error_write(srv, __FILE__, __LINE__, "sb",
+								"send-file error: wrong filetype for X-Sendfile2:",
+								srv->tmp_buf);
+						}
+						return 1;
+					}
+					/* found the file */
+
+					/* parse range */
+					begin_range = 0; end_range = sce->st.st_size - 1;
+					{
+						char *rpos = NULL;
+						errno = 0;
+						begin_range = strtoll(range, &rpos, 10);
+						if (errno != 0 || begin_range < 0 || rpos == range) return 1;
+						if ('-' != *rpos++) return 1;
+						if (rpos != pos) {
+							range = rpos;
+							end_range = strtoll(range, &rpos, 10);
+							if (errno != 0 || end_range < 0 || rpos == range) return 1;
+						}
+						if (rpos != pos) return 1;
+					}
+
+					/* no parameters accepted */
+
+					while (*pos == ' ') pos++;
+					if (*pos != '\0' && *pos != ',') return 1;
+
+					range_len = end_range - begin_range + 1;
+					if (range_len < 0) return 1;
+					if (range_len != 0) {
+						http_chunk_append_file(srv, con, srv->tmp_buf, begin_range, range_len);
+					}
+					sendfile2_content_length += range_len;
+
+					if (*pos == ',') pos++;
+				}
+			}
+			break;
 		case 14:
 			if (0 == strncasecmp(key, "Content-Length", key_len)) {
 				con->response.content_length = strtol(value, NULL, 10);
@@ -2313,6 +2380,26 @@ static int fcgi_response_parse(server *srv, connection *con, plugin_data *p, buf
 		default:
 			break;
 		}
+	}
+
+	if (have_sendfile2) {
+		data_string *dcls;
+
+		hctx->send_content_body = 0;
+		joblist_append(srv, con);
+
+		/* fix content-length */
+		if (NULL == (dcls = (data_string *)array_get_unused_element(con->response.headers, TYPE_STRING))) {
+			dcls = data_response_init();
+		}
+
+		buffer_copy_string_len(dcls->key, "Content-Length", sizeof("Content-Length")-1);
+		buffer_copy_off_t(dcls->value, sendfile2_content_length);
+		dcls = (data_string*) array_replace(con->response.headers, (data_unset *)dcls);
+		if (dcls) dcls->free((data_unset*)dcls);
+
+		con->parsed_response |= HTTP_CONTENT_LENGTH;
+		con->response.content_length = sendfile2_content_length;
 	}
 
 	/* CGI/1.1 rev 03 - 7.2.1.2 */
@@ -2334,8 +2421,8 @@ typedef struct {
 
 static int fastcgi_get_packet(server *srv, handler_ctx *hctx, fastcgi_response_packet *packet) {
 	chunk *	c;
-	size_t offset = 0;
-	size_t toread = 0;
+	size_t offset;
+	size_t toread;
 	FCGI_Header *header;
 
 	if (!hctx->rb->first) return -1;
@@ -2346,20 +2433,22 @@ static int fastcgi_get_packet(server *srv, handler_ctx *hctx, fastcgi_response_p
 	packet->padding = 0;
 	packet->request_id = 0;
 
+	offset = 0; toread = 8;
 	/* get at least the FastCGI header */
 	for (c = hctx->rb->first; c; c = c->next) {
-		size_t weWant = sizeof(*header) - (packet->b->used - 1);
 		size_t weHave = c->mem->used - c->offset - 1;
 
-		if (weHave > weWant) weHave = weWant;
+		if (weHave > toread) weHave = toread;
 
 		if (packet->b->used == 0) {
 			buffer_copy_string_len(packet->b, c->mem->ptr + c->offset, weHave);
 		} else {
 			buffer_append_string_len(packet->b, c->mem->ptr + c->offset, weHave);
 		}
+		toread -= weHave;
+		offset = weHave; /* skip offset bytes in chunk for "real" data */
 
-		if (packet->b->used >= sizeof(*header) + 1) break;
+		if (0 == toread) break;
 	}
 
 	if ((packet->b->used == 0) ||
@@ -2367,7 +2456,9 @@ static int fastcgi_get_packet(server *srv, handler_ctx *hctx, fastcgi_response_p
 		/* no header */
 		buffer_free(packet->b);
 
-		log_error_write(srv, __FILE__, __LINE__, "sdsds", "FastCGI: header too small:", packet->b->used, "bytes <", sizeof(FCGI_Header), "bytes");
+		if (hctx->plugin_data->conf.debug) {
+			log_error_write(srv, __FILE__, __LINE__, "sdsds", "FastCGI: header too small:", packet->b->used, "bytes <", sizeof(FCGI_Header), "bytes, waiting for more data");
+		}
 		return -1;
 	}
 
@@ -2378,9 +2469,6 @@ static int fastcgi_get_packet(server *srv, handler_ctx *hctx, fastcgi_response_p
 	packet->request_id = (header->requestIdB0 | (header->requestIdB1 << 8));
 	packet->type = header->type;
 	packet->padding = header->paddingLength;
-
-	/* the first bytes in packet->b are the header */
-	offset = sizeof(*header);
 
 	/* ->b should only be the content */
 	buffer_copy_string_len(packet->b, CONST_STR_LEN("")); /* used == 1 */
@@ -2395,7 +2483,7 @@ static int fastcgi_get_packet(server *srv, handler_ctx *hctx, fastcgi_response_p
 
 			buffer_append_string_len(packet->b, c->mem->ptr + c->offset + offset, weHave);
 
-			/* we only skipped the first 8 bytes as they are the fcgi header */
+			/* we only skipped the first bytes as they belonged to the fcgi header */
 			offset = 0;
 		}
 
@@ -2542,7 +2630,12 @@ static int fcgi_demux_response(server *srv, handler_ctx *hctx) {
 				}
 
 				/* parse the response header */
-				fcgi_response_parse(srv, con, p, hctx->response_header);
+				if (fcgi_response_parse(srv, con, p, hctx->response_header)) {
+					con->http_status = 502;
+					hctx->send_content_body = 0;
+					con->file_started = 1;
+					break;
+				}
 
 				con->file_started = 1;
 
@@ -2553,7 +2646,7 @@ static int fcgi_demux_response(server *srv, handler_ctx *hctx) {
 					hctx->send_content_body = 0;
 				}
 
-				if (host->allow_xsendfile &&
+				if (host->allow_xsendfile && hctx->send_content_body &&
 				    (NULL != (ds = (data_string *) array_get_element(con->response.headers, "X-LIGHTTPD-send-file"))
 					  || NULL != (ds = (data_string *) array_get_element(con->response.headers, "X-Sendfile")))) {
 					stat_cache_entry *sce;
@@ -2677,53 +2770,55 @@ static int fcgi_restart_dead_procs(server *srv, plugin_data *p, fcgi_extension_h
 			break;
 		case PROC_STATE_DIED_WAIT_FOR_PID:
 			/* non-local procs don't have PIDs to wait for */
-			if (!proc->is_local) break;
+			if (!proc->is_local) {
+				proc->state = PROC_STATE_DIED;
+			} else {
+				/* the child should not terminate at all */
 
-			/* the child should not terminate at all */
+				for ( ;; ) {
+					switch(waitpid(proc->pid, &status, WNOHANG)) {
+					case 0:
+						/* child is still alive */
+						if (srv->cur_ts <= proc->disabled_until) break;
 
-			for ( ;; ) {
-				switch(waitpid(proc->pid, &status, WNOHANG)) {
-				case 0:
-					/* child is still alive */
-					if (srv->cur_ts <= proc->disabled_until) break;
-					
-					proc->state = PROC_STATE_RUNNING;
-					host->active_procs++;
-		
-					log_error_write(srv, __FILE__, __LINE__,  "sbdb",
+						proc->state = PROC_STATE_RUNNING;
+						host->active_procs++;
+
+						log_error_write(srv, __FILE__, __LINE__,  "sbdb",
 							"fcgi-server re-enabled:",
 							host->host, host->port,
 							host->unixsocket);
-					break;
-				case -1:
-					if (errno == EINTR) continue;
+						break;
+					case -1:
+						if (errno == EINTR) continue;
 
-					log_error_write(srv, __FILE__, __LINE__, "sd",
+						log_error_write(srv, __FILE__, __LINE__, "sd",
 							"child died somehow, waitpid failed:",
 							errno);
-					proc->state = PROC_STATE_DIED;
-					break;
-				default:
-					if (WIFEXITED(status)) {
+						proc->state = PROC_STATE_DIED;
+						break;
+					default:
+						if (WIFEXITED(status)) {
 #if 0
-						log_error_write(srv, __FILE__, __LINE__, "sdsd",
+							log_error_write(srv, __FILE__, __LINE__, "sdsd",
 								"child exited, pid:", proc->pid,
 								"status:", WEXITSTATUS(status));
 #endif
-					} else if (WIFSIGNALED(status)) {
-						log_error_write(srv, __FILE__, __LINE__, "sd",
+						} else if (WIFSIGNALED(status)) {
+							log_error_write(srv, __FILE__, __LINE__, "sd",
 								"child signaled:",
 								WTERMSIG(status));
-					} else {
-						log_error_write(srv, __FILE__, __LINE__, "sd",
+						} else {
+							log_error_write(srv, __FILE__, __LINE__, "sd",
 								"child died somehow:",
 								status);
+						}
+
+						proc->state = PROC_STATE_DIED;
+						break;
 					}
-	
-					proc->state = PROC_STATE_DIED;
 					break;
 				}
-				break;
 			}
 
 			/* fall through if we have a dead proc now */
@@ -2733,7 +2828,7 @@ static int fcgi_restart_dead_procs(server *srv, plugin_data *p, fcgi_extension_h
 			/* local procs get restarted by us,
 			 * remote ones hopefully by the admin */
 
-			if (proc->is_local) {
+			if (!buffer_is_empty(host->bin_path)) {
 				/* we still have connections bound to this proc,
 				 * let them terminate first */
 				if (proc->load != 0) break;
@@ -2744,7 +2839,7 @@ static int fcgi_restart_dead_procs(server *srv, plugin_data *p, fcgi_extension_h
 					log_error_write(srv, __FILE__, __LINE__, "ssbsdsd",
 							"--- fastcgi spawning",
 							"\n\tsocket", proc->connection_name,
-							"\n\tcurrent:", 1, "/", host->min_procs);
+							"\n\tcurrent:", 1, "/", host->max_procs);
 				}
 
 				if (fcgi_spawn_connection(srv, p, host, proc)) {
@@ -2783,18 +2878,12 @@ static handler_t fcgi_write_request(server *srv, handler_ctx *hctx) {
 	 *     - tcp socket (do not check host->host->uses, as it may be not set which means INADDR_LOOPBACK)
 	 *     - unix socket
 	 */
-	if (!host ||
-	    (!host->port && !host->unixsocket->used)) {
-		log_error_write(srv, __FILE__, __LINE__, "sxddd",
-				"write-req: error",
-				host,
-				host->host->used,
-				host->port,
-				host->unixsocket->used);
-
-		hctx->proc->disabled_until = srv->cur_ts + 10;
-		hctx->proc->state = PROC_STATE_DIED;
-
+	if (!host) {
+		log_error_write(srv, __FILE__, __LINE__, "s", "fatal error: host = NULL");
+		return HANDLER_ERROR;
+	}
+	if ((!host->port && !host->unixsocket->used)) {
+		log_error_write(srv, __FILE__, __LINE__, "s", "fatal error: neither host->port nor host->unixsocket is set");
 		return HANDLER_ERROR;
 	}
 
@@ -2808,8 +2897,7 @@ static handler_t fcgi_write_request(server *srv, handler_ctx *hctx) {
 			log_error_write(srv, __FILE__, __LINE__, "ss",
 					"getsockopt failed:", strerror(errno));
 
-			hctx->proc->disabled_until = srv->cur_ts + 10;
-			hctx->proc->state = PROC_STATE_DIED;
+			fcgi_host_disable(srv, hctx);
 
 			return HANDLER_ERROR;
 		}
@@ -2822,15 +2910,11 @@ static handler_t fcgi_write_request(server *srv, handler_ctx *hctx) {
 						"socket:", hctx->proc->connection_name);
 			}
 
-			hctx->proc->disabled_until = srv->cur_ts + 5;
-
-			if (hctx->proc->is_local) {
-				hctx->proc->state = PROC_STATE_DIED_WAIT_FOR_PID;
-			} else {
-				hctx->proc->state = PROC_STATE_DIED;
-			}
-
-			hctx->proc->state = PROC_STATE_DIED;
+			fcgi_host_disable(srv, hctx);
+			log_error_write(srv, __FILE__, __LINE__, "sdssdsd",
+				"backend is overloaded; we'll disable it for", hctx->host->disable_time, "seconds and send the request to another backend instead:",
+				"reconnects:", hctx->reconnects,
+				"load:", host->load);
 
 			fastcgi_status_copy_procname(p->statuskey, hctx->host, hctx->proc);
 			buffer_append_string_len(p->statuskey, CONST_STR_LEN(".died"));
@@ -2921,14 +3005,16 @@ static handler_t fcgi_write_request(server *srv, handler_ctx *hctx) {
 			/* cool down the backend, it is overloaded
 			 * -> EAGAIN */
 
-			log_error_write(srv, __FILE__, __LINE__, "ssdsd",
-				"backend is overloaded; we'll disable it for 2 seconds and send the request to another backend instead:",
-				"reconnects:", hctx->reconnects,
-				"load:", host->load);
+			if (hctx->host->disable_time) {
+				log_error_write(srv, __FILE__, __LINE__, "sdssdsd",
+					"backend is overloaded; we'll disable it for", hctx->host->disable_time, "seconds and send the request to another backend instead:",
+					"reconnects:", hctx->reconnects,
+					"load:", host->load);
 
-
-			hctx->proc->disabled_until = srv->cur_ts + 2;
-			hctx->proc->state = PROC_STATE_OVERLOADED;
+				hctx->proc->disabled_until = srv->cur_ts + hctx->host->disable_time;
+				if (hctx->proc->state == PROC_STATE_RUNNING) hctx->host->active_procs--;
+				hctx->proc->state = PROC_STATE_OVERLOADED;
+			}
 
 			fastcgi_status_copy_procname(p->statuskey, hctx->host, hctx->proc);
 			buffer_append_string_len(p->statuskey, CONST_STR_LEN(".overloaded"));
@@ -2941,18 +3027,13 @@ static handler_t fcgi_write_request(server *srv, handler_ctx *hctx) {
 			 * - ECONNREFUSED for tcp-ip sockets
 			 * - ENOENT for unix-domain-sockets
 			 *
-			 * for check if the host is back in 5 seconds
+			 * for check if the host is back in hctx->host->disable_time seconds
 			 *  */
 
-			hctx->proc->disabled_until = srv->cur_ts + 5;
-			if (hctx->proc->is_local) {
-				hctx->proc->state = PROC_STATE_DIED_WAIT_FOR_PID;
-			} else {
-				hctx->proc->state = PROC_STATE_DIED;
-			}
+			fcgi_host_disable(srv, hctx);
 
-			log_error_write(srv, __FILE__, __LINE__, "ssdsd",
-				"backend died; we'll disable it for 5 seconds and send the request to another backend instead:",
+			log_error_write(srv, __FILE__, __LINE__, "sdssdsd",
+				"backend died; we'll disable it for", hctx->host->disable_time, "seconds and send the request to another backend instead:",
 				"reconnects:", hctx->reconnects,
 				"load:", host->load);
 
@@ -2967,8 +3048,6 @@ static handler_t fcgi_write_request(server *srv, handler_ctx *hctx) {
 
 			fcgi_set_state(srv, hctx, FCGI_STATE_PREPARE_WRITE);
 
-			break;
-		case CONNECTION_UNSET:
 			break;
 		}
 
@@ -2988,10 +3067,10 @@ static handler_t fcgi_write_request(server *srv, handler_ctx *hctx) {
 
 		if (p->conf.debug) {
 			log_error_write(srv, __FILE__, __LINE__, "ssdsbsd",
-					"got proc:",
-					"pid:", hctx->proc->pid,
-					"socket:", hctx->proc->connection_name,
-					"load:", hctx->proc->load);
+				"got proc:",
+				"pid:", hctx->proc->pid,
+				"socket:", hctx->proc->connection_name,
+				"load:", hctx->proc->load);
 		}
 
 		/* move the proc-list entry down the list */
@@ -3013,41 +3092,19 @@ static handler_t fcgi_write_request(server *srv, handler_ctx *hctx) {
 
 		if (ret < 0) {
 			switch(errno) {
+			case EPIPE:
 			case ENOTCONN:
+			case ECONNRESET:
 				/* the connection got dropped after accept()
-				 *
-				 * this is most of the time a PHP which dies
-				 * after PHP_FCGI_MAX_REQUESTS
-				 *
-				 */
-				if (hctx->wb->bytes_out == 0 &&
-				    hctx->reconnects < 5) {
-					usleep(10000); /* take away the load of the webserver
-							* to give the php a chance to restart
-							*/
-
-					fcgi_reconnect(srv, hctx);
-
-					return HANDLER_WAIT_FOR_FD;
-				}
-
-				/* not reconnected ... why
-				 *
-				 * far@#lighttpd report this for FreeBSD
-				 *
+				 * we don't care about that - if you accept() it, you have to handle it.
 				 */
 
-				log_error_write(srv, __FILE__, __LINE__, "ssosd",
-						"[REPORT ME] connection was dropped after accept(). reconnect() denied:",
+				log_error_write(srv, __FILE__, __LINE__, "ssosb",
+							"connection was dropped after accept() (perhaps the fastcgi process died),",
 						"write-offset:", hctx->wb->bytes_out,
-						"reconnect attempts:", hctx->reconnects);
+						"socket:", hctx->proc->connection_name);
 
 				return HANDLER_ERROR;
-			case EAGAIN:
-			case EINTR:
-				fdevent_event_add(srv->ev, &(hctx->fde_ndx), hctx->fd, FDEVENT_OUT);
-
-				return HANDLER_WAIT_FOR_EVENT;
 			default:
 				log_error_write(srv, __FILE__, __LINE__, "ssd",
 						"write failed:", strerror(errno), errno);
@@ -3160,8 +3217,6 @@ SUBREQUEST_FUNC(mod_fastcgi_handle_subrequest) {
 
 		if (hctx->state == FCGI_STATE_INIT ||
 		    hctx->state == FCGI_STATE_CONNECT_DELAYED) {
-			if (proc) host->active_procs--;
-
 			fcgi_restart_dead_procs(srv, p, host);
 
 			/* cleanup this request and let the request handler start this request again */
@@ -3175,7 +3230,7 @@ SUBREQUEST_FUNC(mod_fastcgi_handle_subrequest) {
 
 				buffer_reset(con->physical.path);
 				con->mode = DIRECT;
-				con->http_status = 500;
+				con->http_status = 503;
 				joblist_append(srv, con); /* in case we come from the event-handler */
 
 				return HANDLER_FINISHED;
@@ -3277,7 +3332,7 @@ static handler_t fcgi_handle_fdevent(void *s, void *ctx, int revents) {
 						log_error_write(srv, __FILE__, __LINE__, "ssbsdsd",
 								"--- fastcgi spawning",
 								"\n\tsocket", proc->connection_name,
-								"\n\tcurrent:", 1, "/", host->min_procs);
+								"\n\tcurrent:", 1, "/", host->max_procs);
 					}
 
 					if (fcgi_spawn_connection(srv, p, host, proc)) {
@@ -3299,18 +3354,18 @@ static handler_t fcgi_handle_fdevent(void *s, void *ctx, int revents) {
 				    hctx->reconnects < 5) {
 					fcgi_reconnect(srv, hctx);
 
-					log_error_write(srv, __FILE__, __LINE__, "ssbsbs",
+					log_error_write(srv, __FILE__, __LINE__, "ssbsBSBs",
 						"response not received, request not sent",
 						"on socket:", proc->connection_name,
-						"for", con->uri.path, ", reconnecting");
+						"for", con->uri.path, "?", con->uri.query, ", reconnecting");
 
 					return HANDLER_WAIT_FOR_FD;
 				}
 
-				log_error_write(srv, __FILE__, __LINE__, "sosbsbs",
+				log_error_write(srv, __FILE__, __LINE__, "sosbsBSBs",
 						"response not received, request sent:", hctx->wb->bytes_out,
 						"on socket:", proc->connection_name,
-						"for", con->uri.path, ", closing connection");
+						"for", con->uri.path, "?", con->uri.query, ", closing connection");
 
 				fcgi_connection_close(srv, hctx);
 
@@ -3322,10 +3377,10 @@ static handler_t fcgi_handle_fdevent(void *s, void *ctx, int revents) {
 				/* response might have been already started, kill the connection */
 				fcgi_connection_close(srv, hctx);
 
-				log_error_write(srv, __FILE__, __LINE__, "ssbsbs",
+				log_error_write(srv, __FILE__, __LINE__, "ssbsBSBs",
 						"response already sent out, but backend returned error",
 						"on socket:", proc->connection_name,
-						"for", con->uri.path, ", terminating connection");
+						"for", con->uri.path, "?", con->uri.query, ", terminating connection");
 
 				connection_set_state(srv, con, CON_STATE_ERROR);
 			}
@@ -3375,9 +3430,9 @@ static handler_t fcgi_handle_fdevent(void *s, void *ctx, int revents) {
 			 * even if the FCGI_FIN packet is not received yet
 			 */
 		} else {
-			log_error_write(srv, __FILE__, __LINE__, "sbsbsd",
+			log_error_write(srv, __FILE__, __LINE__, "sBSbsbsd",
 					"error: unexpected close of fastcgi connection for",
-					con->uri.path,
+					con->uri.path, "?", con->uri.query,
 					"(no fastcgi process on socket:", proc->connection_name, "?)",
 					hctx->state);
 
@@ -3506,25 +3561,27 @@ static handler_t fcgi_check_extension(server *srv, connection *con, void *p_d, i
 		/* check if extension matches */
 		for (k = 0; k < p->conf.exts->used; k++) {
 			size_t ct_len; /* length of the config entry */
+			fcgi_extension *ext = p->conf.exts->exts[k];
 
-			extension = p->conf.exts->exts[k];
+			if (ext->key->used == 0) continue;
 
-			if (extension->key->used == 0) continue;
-
-			ct_len = extension->key->used - 1;
+			ct_len = ext->key->used - 1;
 
 			/* check _url_ in the form "/fcgi_pattern" */
-			if (extension->key->ptr[0] == '/') {
+			if (ext->key->ptr[0] == '/') {
 				if ((ct_len <= con->uri.path->used -1) &&
-				    (strncmp(con->uri.path->ptr, extension->key->ptr, ct_len) == 0))
+				    (strncmp(con->uri.path->ptr, ext->key->ptr, ct_len) == 0)) {
+					extension = ext;
 					break;
-			} else if ((ct_len <= s_len) && (0 == strncmp(fn->ptr + s_len - ct_len, extension->key->ptr, ct_len))) {
+				}
+			} else if ((ct_len <= s_len) && (0 == strncmp(fn->ptr + s_len - ct_len, ext->key->ptr, ct_len))) {
 				/* check extension in the form ".fcg" */
+				extension = ext;
 				break;
 			}
 		}
 		/* extension doesn't match */
-		if (k == p->conf.exts->used) {
+		if (NULL == extension) {
 			return HANDLER_GO_ON;
 		}
 	}
@@ -3552,8 +3609,8 @@ static handler_t fcgi_check_extension(server *srv, connection *con, void *p_d, i
 		if (!extension->note_is_sent) {
 			extension->note_is_sent = 1;
 
-			log_error_write(srv, __FILE__, __LINE__, "sbsbs",
-					"all handlers for ", con->uri.path,
+			log_error_write(srv, __FILE__, __LINE__, "sBSbsbs",
+					"all handlers for", con->uri.path, "?", con->uri.query,
 					"on", extension->key,
 					"are down.");
 		}
@@ -3745,106 +3802,11 @@ TRIGGER_FUNC(mod_fastcgi_handle_trigger) {
 			for (n = 0; n < ex->used; n++) {
 
 				fcgi_proc *proc;
-				unsigned long sum_load = 0;
 				fcgi_extension_host *host;
 
 				host = ex->hosts[n];
 
 				fcgi_restart_dead_procs(srv, p, host);
-
-				for (proc = host->first; proc; proc = proc->next) {
-					sum_load += proc->load;
-				}
-
-				if (host->num_procs &&
-				    host->num_procs < host->max_procs &&
-				    (sum_load / host->num_procs) > host->max_load_per_proc) {
-					/* overload, spawn new child */
-					if (p->conf.debug) {
-						log_error_write(srv, __FILE__, __LINE__, "s",
-								"overload detected, spawning a new child");
-					}
-
-					for (proc = host->unused_procs; proc && proc->pid != 0; proc = proc->next);
-
-					if (proc) {
-						if (proc == host->unused_procs) host->unused_procs = proc->next;
-
-						if (proc->next) proc->next->prev = NULL;
-
-						host->max_id++;
-					} else {
-						proc = fastcgi_process_init();
-						proc->id = host->max_id++;
-					}
-
-					host->num_procs++;
-
-					if (buffer_is_empty(host->unixsocket)) {
-						proc->port = host->port + proc->id;
-					} else {
-						buffer_copy_string_buffer(proc->unixsocket, host->unixsocket);
-						buffer_append_string_len(proc->unixsocket, CONST_STR_LEN("-"));
-						buffer_append_long(proc->unixsocket, proc->id);
-					}
-
-					if (fcgi_spawn_connection(srv, p, host, proc)) {
-						log_error_write(srv, __FILE__, __LINE__, "s",
-								"ERROR: spawning fcgi failed.");
-						return HANDLER_ERROR;
-					}
-
-					proc->prev = NULL;
-					proc->next = host->first;
-					if (host->first) {
-						host->first->prev = proc;
-					}
-					host->first = proc;
-				}
-
-				for (proc = host->first; proc; proc = proc->next) {
-					if (proc->load != 0) break;
-					if (host->num_procs <= host->min_procs) break;
-					if (proc->pid == 0) continue;
-
-					if (srv->cur_ts - proc->last_used > host->idle_timeout) {
-						/* a proc is idling for a long time now,
-						 * terminate it */
-
-						if (p->conf.debug) {
-							log_error_write(srv, __FILE__, __LINE__, "ssbsd",
-									"idle-timeout reached; terminating child:",
-									"socket:", proc->connection_name,
-									"pid", proc->pid);
-						}
-
-
-						if (proc->next) proc->next->prev = proc->prev;
-						if (proc->prev) proc->prev->next = proc->next;
-
-						if (proc->prev == NULL) host->first = proc->next;
-
-						proc->prev = NULL;
-						proc->next = host->unused_procs;
-
-						if (host->unused_procs) host->unused_procs->prev = proc;
-						host->unused_procs = proc;
-
-						kill(proc->pid, SIGTERM);
-
-						proc->state = PROC_STATE_KILLED;
-
-						log_error_write(srv, __FILE__, __LINE__, "ssbsd",
-									"killed:",
-									"socket:", proc->connection_name,
-									"pid", proc->pid);
-
-						host->num_procs--;
-
-						/* proc is now in unused, let the next second handle the next process */
-						break;
-					}
-				}
 
 				for (proc = host->unused_procs; proc; proc = proc->next) {
 					int status;
@@ -3891,6 +3853,7 @@ TRIGGER_FUNC(mod_fastcgi_handle_trigger) {
 									status);
 						}
 						proc->pid = 0;
+						if (proc->state == PROC_STATE_RUNNING) host->active_procs--;
 						proc->state = PROC_STATE_UNSET;
 						host->max_id--;
 					}

@@ -3,15 +3,13 @@
 %name configparser
 
 %include {
-#include <assert.h>
-#include <stdio.h>
-#include <string.h>
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
 #include "configfile.h"
 #include "buffer.h"
 #include "array.h"
+
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
 
 static void configparser_push(config_t *ctx, data_config *dc, int isnew) {
   if (isnew) {
@@ -72,7 +70,7 @@ data_unset *configparser_merge_data(data_unset *op1, const data_unset *op2) {
       op1->free(op1);
       return (data_unset *)ds;
     } else {
-      fprintf(stderr, "data type mismatch, cannot be merge\n");
+      fprintf(stderr, "data type mismatch, cannot merge\n");
       return NULL;
     }
   }
@@ -193,7 +191,6 @@ varline ::= key(A) APPEND expression(B). {
     du = configparser_merge_data(du, B);
     if (NULL == du) {
       ctx->ok = 0;
-      du->free(du);
     }
     else {
       buffer_copy_string_buffer(du->key, A);
@@ -353,7 +350,10 @@ global(A) ::= globalstart LCURLY metalines RCURLY. {
 }
 
 condlines(A) ::= condlines(B) eols ELSE condline(C). {
-  assert(B->context_ndx < C->context_ndx);
+  if (B->context_ndx >= C->context_ndx) {
+    fprintf(stderr, "unreachable else condition\n");
+    ctx->ok = 0;
+  }
   C->prev = B;
   B->next = C;
   A = C;
@@ -470,7 +470,7 @@ context ::= DOLLAR SRVVARNAME(B) LBRACKET stringop(C) RBRACKET cond(E) expressio
     case CONFIG_COND_MATCH: {
 #ifdef HAVE_PCRE_H
       const char *errptr;
-      int erroff;
+      int erroff, captures;
 
       if (NULL == (dc->regex =
           pcre_compile(rvalue->ptr, 0, &errptr, &erroff, NULL))) {
@@ -486,6 +486,14 @@ context ::= DOLLAR SRVVARNAME(B) LBRACKET stringop(C) RBRACKET cond(E) expressio
                  errptr != NULL) {
         fprintf(stderr, "studying regex failed: %s -> %s\n",
             rvalue->ptr, errptr);
+        ctx->ok = 0;
+      } else if (0 != (pcre_fullinfo(dc->regex, dc->regex_study, PCRE_INFO_CAPTURECOUNT, &captures))) {
+        fprintf(stderr, "getting capture count for regex failed: %s\n",
+            rvalue->ptr);
+        ctx->ok = 0;
+      } else if (captures > 9) {
+        fprintf(stderr, "Too many captures in regex, use (?:...) instead of (...): %s\n",
+            rvalue->ptr);
         ctx->ok = 0;
       } else {
         dc->string = buffer_init_buffer(rvalue);

@@ -1,3 +1,6 @@
+#include "fdevent.h"
+#include "buffer.h"
+
 #include <sys/time.h>
 #include <sys/types.h>
 
@@ -8,10 +11,6 @@
 #include <signal.h>
 #include <fcntl.h>
 #include <assert.h>
-
-#include "fdevent.h"
-#include "settings.h"
-#include "buffer.h"
 
 #ifdef USE_SELECT
 
@@ -38,7 +37,7 @@ static int fdevent_select_event_add(fdevents *ev, int fde_ndx, int fd, int event
 	UNUSED(fde_ndx);
 
 	/* we should be protected by max-fds, but you never know */
-	assert(fd < FD_SETSIZE);
+	assert(fd < ((int)FD_SETSIZE));
 
 	if (events & FDEVENT_IN) {
 		FD_SET(fd, &(ev->select_set_read));

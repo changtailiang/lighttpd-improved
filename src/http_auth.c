@@ -1,6 +1,9 @@
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
+#include "server.h"
+#include "log.h"
+#include "http_auth.h"
+#include "http_auth_digest.h"
+#include "inet_ntop_cache.h"
+#include "stream.h"
 
 #ifdef HAVE_CRYPT_H
 # include <crypt.h>
@@ -24,13 +27,6 @@
 #include <errno.h>
 #include <unistd.h>
 #include <ctype.h>
-
-#include "server.h"
-#include "log.h"
-#include "http_auth.h"
-#include "http_auth_digest.h"
-#include "inet_ntop_cache.h"
-#include "stream.h"
 
 #ifdef USE_OPENSSL
 # include <openssl/md5.h>
@@ -918,15 +914,15 @@ int http_auth_digest_check(server *srv, connection *con, mod_auth_plugin_data *p
 	char a1[256];
 	char a2[256];
 
-	char *username;
-	char *realm;
-	char *nonce;
-	char *uri;
-	char *algorithm;
-	char *qop;
-	char *cnonce;
-	char *nc;
-	char *respons;
+	char *username = NULL;
+	char *realm = NULL;
+	char *nonce = NULL;
+	char *uri = NULL;
+	char *algorithm = NULL;
+	char *qop = NULL;
+	char *cnonce = NULL;
+	char *nc = NULL;
+	char *respons = NULL;
 
 	char *e, *c;
 	const char *m = NULL;
@@ -967,14 +963,8 @@ int http_auth_digest_check(server *srv, connection *con, mod_auth_plugin_data *p
 	dkv[6].ptr = &cnonce;
 	dkv[7].ptr = &nc;
 	dkv[8].ptr = &respons;
-	dkv[9].ptr = NULL;
 
 	UNUSED(req);
-
-	for (i = 0; dkv[i].key; i++) {
-		*(dkv[i].ptr) = NULL;
-	}
-
 
 	if (p->conf.auth_backend != AUTH_BACKEND_HTDIGEST &&
 	    p->conf.auth_backend != AUTH_BACKEND_PLAIN) {

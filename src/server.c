@@ -1,19 +1,3 @@
-#include <sys/types.h>
-#include <sys/time.h>
-#include <sys/stat.h>
-
-#include <string.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <stdlib.h>
-#include <time.h>
-#include <signal.h>
-#include <assert.h>
-#include <locale.h>
-
-#include <stdio.h>
-
 #include "server.h"
 #include "buffer.h"
 #include "network.h"
@@ -31,29 +15,45 @@
 #include "network_backends.h"
 #include "version.h"
 
+#include <sys/types.h>
+#include <sys/time.h>
+#include <sys/stat.h>
+
+#include <string.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <time.h>
+#include <signal.h>
+#include <assert.h>
+#include <locale.h>
+
+#include <stdio.h>
+
 #ifdef HAVE_GETOPT_H
-#include <getopt.h>
+# include <getopt.h>
 #endif
 
 #ifdef HAVE_VALGRIND_VALGRIND_H
-#include <valgrind/valgrind.h>
+# include <valgrind/valgrind.h>
 #endif
 
 #ifdef HAVE_SYS_WAIT_H
-#include <sys/wait.h>
+# include <sys/wait.h>
 #endif
 
 #ifdef HAVE_PWD_H
-#include <grp.h>
-#include <pwd.h>
+# include <grp.h>
+# include <pwd.h>
 #endif
 
 #ifdef HAVE_SYS_RESOURCE_H
-#include <sys/resource.h>
+# include <sys/resource.h>
 #endif
 
 #ifdef HAVE_SYS_PRCTL_H
-#include <sys/prctl.h>
+# include <sys/prctl.h>
 #endif
 
 #ifdef USE_OPENSSL
@@ -187,6 +187,7 @@ static server *server_init(void) {
 	CLEAN(cond_check_buf);
 
 	CLEAN(srvconf.errorlog_file);
+	CLEAN(srvconf.breakagelog_file);
 	CLEAN(srvconf.groupname);
 	CLEAN(srvconf.username);
 	CLEAN(srvconf.changeroot);
@@ -245,8 +246,8 @@ static server *server_init(void) {
 	srv->srvconf.reject_expect_100_with_417 = 1;
 
 	/* use syslog */
-	srv->errorlog_fd = -1;
-	srv->errorlog_mode = ERRORLOG_STDERR;
+	srv->errorlog_fd = STDERR_FILENO;
+	srv->errorlog_mode = ERRORLOG_FD;
 
 	srv->split_vals = array_init();
 
@@ -274,6 +275,7 @@ static void server_free(server *srv) {
 	CLEAN(cond_check_buf);
 
 	CLEAN(srvconf.errorlog_file);
+	CLEAN(srvconf.breakagelog_file);
 	CLEAN(srvconf.groupname);
 	CLEAN(srvconf.username);
 	CLEAN(srvconf.changeroot);
@@ -308,6 +310,7 @@ static void server_free(server *srv) {
 			buffer_free(s->error_handler);
 			buffer_free(s->errorfile_prefix);
 			array_free(s->mimetypes);
+			buffer_free(s->ssl_verifyclient_username);
 #ifdef USE_OPENSSL
 			SSL_CTX_free(s->ssl_ctx);
 #endif
@@ -721,7 +724,7 @@ int main (int argc, char **argv) {
 		}
 
 		if (srv->event_handler == FDEVENT_HANDLER_SELECT) {
-			srv->max_fds = rlim.rlim_cur < FD_SETSIZE - 200 ? rlim.rlim_cur : FD_SETSIZE - 200;
+			srv->max_fds = rlim.rlim_cur < ((int)FD_SETSIZE) - 200 ? rlim.rlim_cur : FD_SETSIZE - 200;
 		} else {
 			srv->max_fds = rlim.rlim_cur;
 		}
@@ -734,7 +737,7 @@ int main (int argc, char **argv) {
 #endif
 		if (srv->event_handler == FDEVENT_HANDLER_SELECT) {
 			/* don't raise the limit above FD_SET_SIZE */
-			if (srv->max_fds > FD_SETSIZE - 200) {
+			if (srv->max_fds > ((int)FD_SETSIZE) - 200) {
 				log_error_write(srv, __FILE__, __LINE__, "sd",
 						"can't raise max filedescriptors above",  FD_SETSIZE - 200,
 						"if event-handler is 'select'. Use 'poll' or something else or reduce server.max-fds.");
@@ -784,7 +787,7 @@ int main (int argc, char **argv) {
 		 * Change group before chroot, when we have access
 		 * to /etc/group
 		 * */
-		if (srv->srvconf.groupname->used) {
+		if (NULL != grp) {
 			setgid(grp->gr_gid);
 			setgroups(0, NULL);
 			if (srv->srvconf.username->used) {
@@ -808,7 +811,7 @@ int main (int argc, char **argv) {
 #endif
 #ifdef HAVE_PWD_H
 		/* drop root privs */
-		if (srv->srvconf.username->used) {
+		if (NULL != pwd) {
 			setuid(pwd->pw_uid);
 		}
 #endif
@@ -847,7 +850,7 @@ int main (int argc, char **argv) {
 		}
 
 		if (srv->event_handler == FDEVENT_HANDLER_SELECT) {
-			srv->max_fds = rlim.rlim_cur < FD_SETSIZE - 200 ? rlim.rlim_cur : FD_SETSIZE - 200;
+			srv->max_fds = rlim.rlim_cur < ((int)FD_SETSIZE) - 200 ? rlim.rlim_cur : FD_SETSIZE - 200;
 		} else {
 			srv->max_fds = rlim.rlim_cur;
 		}
@@ -861,7 +864,7 @@ int main (int argc, char **argv) {
 #endif
 		if (srv->event_handler == FDEVENT_HANDLER_SELECT) {
 			/* don't raise the limit above FD_SET_SIZE */
-			if (srv->max_fds > FD_SETSIZE - 200) {
+			if (srv->max_fds > ((int)FD_SETSIZE) - 200) {
 				log_error_write(srv, __FILE__, __LINE__, "sd",
 						"can't raise max filedescriptors above",  FD_SETSIZE - 200,
 						"if event-handler is 'select'. Use 'poll' or something else or reduce server.max-fds.");
@@ -1256,7 +1259,7 @@ int main (int argc, char **argv) {
 								changed = 1;
 							}
 						} else {
-							if (srv->cur_ts - con->read_idle_ts > con->conf.max_keep_alive_idle) {
+							if (srv->cur_ts - con->read_idle_ts > con->keep_alive_idle) {
 								/* time - out */
 #if 0
 								log_error_write(srv, __FILE__, __LINE__, "sd",
@@ -1293,6 +1296,11 @@ int main (int argc, char **argv) {
 							changed = 1;
 						}
 					}
+
+					if (con->state == CON_STATE_CLOSE && (srv->cur_ts - con->close_timeout_ts > HTTP_LINGER_TIMEOUT)) {
+						changed = 1;
+					}
+
 					/* we don't like div by zero */
 					if (0 == (t_diff = srv->cur_ts - con->connection_start)) t_diff = 1;
 

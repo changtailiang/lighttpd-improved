@@ -1,9 +1,3 @@
-#include <ctype.h>
-#include <stdlib.h>
-#include <string.h>
-#include <assert.h>
-#include <setjmp.h>
-
 #include "base.h"
 #include "log.h"
 #include "buffer.h"
@@ -15,6 +9,12 @@
 #include "stat_cache.h"
 #include "status_counter.h"
 #include "etag.h"
+
+#include <ctype.h>
+#include <stdlib.h>
+#include <string.h>
+#include <assert.h>
+#include <setjmp.h>
 
 #ifdef HAVE_LUA_H
 #include <lua.h>
@@ -158,6 +158,81 @@ static int mod_magnet_patch_connection(server *srv, connection *con, plugin_data
 }
 #undef PATCH
 
+/* See http://lua-users.org/wiki/GeneralizedPairsAndIpairs for implementation details. */
+
+/* Override the default pairs() function to allow us to use a __pairs metakey */
+static int magnet_pairs(lua_State *L) {
+	luaL_checkany(L, 1);
+
+	if (luaL_getmetafield(L, 1, "__pairs")) {
+		lua_insert(L, 1);
+		lua_call(L, lua_gettop(L) - 1, LUA_MULTRET);
+		return lua_gettop(L);
+	} else {
+		lua_pushvalue(L, lua_upvalueindex(1));
+		lua_insert(L, 1);
+		lua_call(L, lua_gettop(L) - 1, LUA_MULTRET);
+		return lua_gettop(L);
+	}
+}
+
+/* Define a function that will iterate over an array* (in upval 1) using current position (upval 2) */
+static int magnet_array_next(lua_State *L) {
+	data_unset *du;
+	data_string *ds;
+	data_integer *di;
+
+	size_t pos = lua_tointeger(L, lua_upvalueindex(1));
+	array *a = lua_touserdata(L, lua_upvalueindex(2));
+
+	lua_settop(L, 0);
+
+	if (pos >= a->used) return 0;
+	if (NULL != (du = a->data[pos])) {
+		if (du->key->used) {
+			lua_pushlstring(L, du->key->ptr, du->key->used - 1);
+		}
+		else {
+			lua_pushlstring(L, "", 0);
+		}
+		switch (du->type) {
+			case TYPE_STRING:
+				ds = (data_string *)du;
+				if (ds->value && ds->value->used) {
+					lua_pushlstring(L, ds->value->ptr, ds->value->used - 1);
+				} else {
+					lua_pushnil(L);
+				}
+				break;
+			case TYPE_COUNT:
+			case TYPE_INTEGER:
+				di = (data_integer *)du;
+				lua_pushinteger(L, di->value);
+				break;
+			default:
+				lua_pushnil(L);
+				break;
+		}
+
+		/* Update our positional upval to reflect our new current position */
+		pos++;
+		lua_pushinteger(L, pos);
+		lua_replace(L, lua_upvalueindex(1));
+
+		/* Returning 2 items on the stack (key, value) */
+		return 2;
+	}
+	return 0;
+}
+
+/* Create the closure necessary to iterate over the array *a with the above function */
+static int magnet_array_pairs(lua_State *L, array *a) {
+	lua_pushinteger(L, 0); /* Push our current pos (the start) into upval 1 */
+	lua_pushlightuserdata(L, a); /* Push our array *a into upval 2 */
+	lua_pushcclosure(L, magnet_array_next, 2); /* Push our new closure with 2 upvals */
+	return 1;
+}
+
 static int magnet_print(lua_State *L) {
 	const char *s = luaL_checkstring(L, 1);
 	server *srv;
@@ -283,16 +358,10 @@ static int magnet_atpanic(lua_State *L) {
 }
 
 static int magnet_reqhdr_get(lua_State *L) {
-	server *srv;
 	connection *con;
 	data_string *ds;
 
 	const char *key = luaL_checkstring(L, 2);
-
-	lua_pushstring(L, "lighty.srv");
-	lua_gettable(L, LUA_REGISTRYINDEX);
-	srv = lua_touserdata(L, -1);
-	lua_pop(L, 1);
 
 	lua_pushstring(L, "lighty.con");
 	lua_gettable(L, LUA_REGISTRYINDEX);
@@ -309,6 +378,17 @@ static int magnet_reqhdr_get(lua_State *L) {
 		lua_pushnil(L);
 	}
 	return 1;
+}
+
+static int magnet_reqhdr_pairs(lua_State *L) {
+	connection *con;
+
+	lua_pushstring(L, "lighty.con");
+	lua_gettable(L, LUA_REGISTRYINDEX);
+	con = lua_touserdata(L, -1);
+	lua_pop(L, 1);
+
+	return magnet_array_pairs(L, con->request.headers);
 }
 
 static int magnet_status_get(lua_State *L) {
@@ -347,6 +427,17 @@ static int magnet_status_set(lua_State *L) {
 	return 0;
 }
 
+static int magnet_status_pairs(lua_State *L) {
+	server *srv;
+
+	lua_pushstring(L, "lighty.srv");
+	lua_gettable(L, LUA_REGISTRYINDEX);
+	srv = lua_touserdata(L, -1);
+	lua_pop(L, 1);
+
+	return magnet_array_pairs(L, srv->status);
+}
+
 typedef struct {
 	const char *name;
 	enum {
@@ -368,33 +459,32 @@ typedef struct {
 		MAGNET_ENV_REQUEST_PATH_INFO,
 		MAGNET_ENV_REQUEST_REMOTE_IP,
 		MAGNET_ENV_REQUEST_PROTOCOL
-       	} type;
+	} type;
 } magnet_env_t;
 
-static buffer *magnet_env_get_buffer(server *srv, connection *con, const char *key) {
+static const magnet_env_t magnet_env[] = {
+	{ "physical.path", MAGNET_ENV_PHYICAL_PATH },
+	{ "physical.rel-path", MAGNET_ENV_PHYICAL_REL_PATH },
+	{ "physical.doc-root", MAGNET_ENV_PHYICAL_DOC_ROOT },
+
+	{ "uri.path", MAGNET_ENV_URI_PATH },
+	{ "uri.path-raw", MAGNET_ENV_URI_PATH_RAW },
+	{ "uri.scheme", MAGNET_ENV_URI_SCHEME },
+	{ "uri.authority", MAGNET_ENV_URI_AUTHORITY },
+	{ "uri.query", MAGNET_ENV_URI_QUERY },
+
+	{ "request.method", MAGNET_ENV_REQUEST_METHOD },
+	{ "request.uri", MAGNET_ENV_REQUEST_URI },
+	{ "request.orig-uri", MAGNET_ENV_REQUEST_ORIG_URI },
+	{ "request.path-info", MAGNET_ENV_REQUEST_PATH_INFO },
+	{ "request.remote-ip", MAGNET_ENV_REQUEST_REMOTE_IP },
+	{ "request.protocol", MAGNET_ENV_REQUEST_PROTOCOL },
+
+	{ NULL, MAGNET_ENV_UNSET }
+};
+
+static buffer *magnet_env_get_buffer_by_id(server *srv, connection *con, int id) {
 	buffer *dest = NULL;
-	size_t i;
-
-	const magnet_env_t env[] = {
-		{ "physical.path", MAGNET_ENV_PHYICAL_PATH },
-		{ "physical.rel-path", MAGNET_ENV_PHYICAL_REL_PATH },
-		{ "physical.doc-root", MAGNET_ENV_PHYICAL_DOC_ROOT },
-
-		{ "uri.path", MAGNET_ENV_URI_PATH },
-		{ "uri.path-raw", MAGNET_ENV_URI_PATH_RAW },
-		{ "uri.scheme", MAGNET_ENV_URI_SCHEME },
-		{ "uri.authority", MAGNET_ENV_URI_AUTHORITY },
-		{ "uri.query", MAGNET_ENV_URI_QUERY },
-
-		{ "request.method", MAGNET_ENV_REQUEST_METHOD },
-		{ "request.uri", MAGNET_ENV_REQUEST_URI },
-		{ "request.orig-uri", MAGNET_ENV_REQUEST_ORIG_URI },
-		{ "request.path-info", MAGNET_ENV_REQUEST_PATH_INFO },
-		{ "request.remote-ip", MAGNET_ENV_REQUEST_REMOTE_IP },
-		{ "request.protocol", MAGNET_ENV_REQUEST_PROTOCOL },
-
-		{ NULL, MAGNET_ENV_UNSET }
-	};
 
 	UNUSED(srv);
 
@@ -403,11 +493,7 @@ static buffer *magnet_env_get_buffer(server *srv, connection *con, const char *k
 	 *
 	 */
 
-	for (i = 0; env[i].name; i++) {
-		if (0 == strcmp(key, env[i].name)) break;
-	}
-
-	switch (env[i].type) {
+	switch (id) {
 	case MAGNET_ENV_PHYICAL_PATH: dest = con->physical.path; break;
 	case MAGNET_ENV_PHYICAL_REL_PATH: dest = con->physical.rel_path; break;
 	case MAGNET_ENV_PHYICAL_DOC_ROOT: dest = con->physical.doc_root; break;
@@ -435,6 +521,16 @@ static buffer *magnet_env_get_buffer(server *srv, connection *con, const char *k
 	}
 
 	return dest;
+}
+
+static buffer *magnet_env_get_buffer(server *srv, connection *con, const char *key) {
+	size_t i;
+
+	for (i = 0; magnet_env[i].name; i++) {
+		if (0 == strcmp(key, magnet_env[i].name)) break;
+	}
+
+	return magnet_env_get_buffer_by_id(srv, con, magnet_env[i].type);
 }
 
 static int magnet_env_get(lua_State *L) {
@@ -494,6 +590,50 @@ static int magnet_env_set(lua_State *L) {
 	return 0;
 }
 
+static int magnet_env_next(lua_State *L) {
+	server *srv;
+	connection *con;
+	int pos = lua_tointeger(L, lua_upvalueindex(1));
+
+	buffer *dest;
+
+	lua_pushstring(L, "lighty.srv");
+	lua_gettable(L, LUA_REGISTRYINDEX);
+	srv = lua_touserdata(L, -1);
+	lua_pop(L, 1);
+
+	lua_pushstring(L, "lighty.con");
+	lua_gettable(L, LUA_REGISTRYINDEX);
+	con = lua_touserdata(L, -1);
+	lua_pop(L, 1);
+
+	lua_settop(L, 0);
+
+	if (NULL == magnet_env[pos].name) return 0; /* end of list */
+
+	lua_pushstring(L, magnet_env[pos].name);
+
+	dest = magnet_env_get_buffer_by_id(srv, con, magnet_env[pos].type);
+	if (dest && dest->used) {
+		lua_pushlstring(L, dest->ptr, dest->used - 1);
+	} else {
+		lua_pushnil(L);
+	}
+
+	/* Update our positional upval to reflect our new current position */
+	pos++;
+	lua_pushinteger(L, pos);
+	lua_replace(L, lua_upvalueindex(1));
+
+	/* Returning 2 items on the stack (key, value) */
+	return 2;
+}
+
+static int magnet_env_pairs(lua_State *L) {
+	lua_pushinteger(L, 0); /* Push our current pos (the start) into upval 1 */
+	lua_pushcclosure(L, magnet_env_next, 1); /* Push our new closure with 1 upvals */
+	return 1;
+}
 
 static int magnet_cgi_get(lua_State *L) {
 	connection *con;
@@ -528,6 +668,17 @@ static int magnet_cgi_set(lua_State *L) {
 	array_set_key_value(con->environment, key, strlen(key), val, strlen(val));
 
 	return 0;
+}
+
+static int magnet_cgi_pairs(lua_State *L) {
+	connection *con;
+
+	lua_pushstring(L, "lighty.con");
+	lua_gettable(L, LUA_REGISTRYINDEX);
+	con = lua_touserdata(L, -1);
+	lua_pop(L, 1);
+
+	return magnet_array_pairs(L, con->environment);
 }
 
 
@@ -674,9 +825,36 @@ static int magnet_attach_content(server *srv, connection *con, plugin_data *p, l
 	return 0;
 }
 
+static int traceback (lua_State *L) {
+	if (!lua_isstring(L, 1))  /* 'message' not a string? */
+		return 1;  /* keep it intact */
+	lua_getfield(L, LUA_GLOBALSINDEX, "debug");
+	if (!lua_istable(L, -1)) {
+		lua_pop(L, 1);
+		return 1;
+	}
+	lua_getfield(L, -1, "traceback");
+	if (!lua_isfunction(L, -1)) {
+		lua_pop(L, 2);
+		return 1;
+	}
+	lua_pushvalue(L, 1);  /* pass error message */
+	lua_pushinteger(L, 2);  /* skip this function and traceback */
+	lua_call(L, 2, 1);  /* call debug.traceback */
+	return 1;
+}
+
+static int push_traceback(lua_State *L, int narg) {
+	int base = lua_gettop(L) - narg;  /* function index */
+	lua_pushcfunction(L, traceback);
+	lua_insert(L, base);
+	return base;
+}
+
 static handler_t magnet_attract(server *srv, connection *con, plugin_data *p, buffer *name) {
 	lua_State *L;
 	int lua_return_value = -1;
+	int errfunc;
 	/* get the script-context */
 
 
@@ -739,6 +917,8 @@ static handler_t magnet_attract(server *srv, connection *con, plugin_data *p, bu
 	lua_newtable(L); /* the meta-table for the request-table     (sp += 1) */
 	lua_pushcfunction(L, magnet_reqhdr_get);                  /* (sp += 1) */
 	lua_setfield(L, -2, "__index");                           /* (sp -= 1) */
+	lua_pushcfunction(L, magnet_reqhdr_pairs);                /* (sp += 1) */
+	lua_setfield(L, -2, "__pairs");                           /* (sp -= 1) */
 	lua_setmetatable(L, -2); /* tie the metatable to request     (sp -= 1) */
 	lua_setfield(L, -2, "request"); /* content = {}              (sp -= 1) */
 
@@ -748,6 +928,8 @@ static handler_t magnet_attract(server *srv, connection *con, plugin_data *p, bu
 	lua_setfield(L, -2, "__index");                           /* (sp -= 1) */
 	lua_pushcfunction(L, magnet_env_set);                     /* (sp += 1) */
 	lua_setfield(L, -2, "__newindex");                        /* (sp -= 1) */
+	lua_pushcfunction(L, magnet_env_pairs);                   /* (sp += 1) */
+	lua_setfield(L, -2, "__pairs");                           /* (sp -= 1) */
 	lua_setmetatable(L, -2); /* tie the metatable to request     (sp -= 1) */
 	lua_setfield(L, -2, "env"); /* content = {}                  (sp -= 1) */
 
@@ -757,6 +939,8 @@ static handler_t magnet_attract(server *srv, connection *con, plugin_data *p, bu
 	lua_setfield(L, -2, "__index");                           /* (sp -= 1) */
 	lua_pushcfunction(L, magnet_cgi_set);                     /* (sp += 1) */
 	lua_setfield(L, -2, "__newindex");                        /* (sp -= 1) */
+	lua_pushcfunction(L, magnet_cgi_pairs);                   /* (sp += 1) */
+	lua_setfield(L, -2, "__pairs");                           /* (sp -= 1) */
 	lua_setmetatable(L, -2); /* tie the metatable to req_env     (sp -= 1) */
 	lua_setfield(L, -2, "req_env"); /* content = {}              (sp -= 1) */
 
@@ -766,6 +950,8 @@ static handler_t magnet_attract(server *srv, connection *con, plugin_data *p, bu
 	lua_setfield(L, -2, "__index");                           /* (sp -= 1) */
 	lua_pushcfunction(L, magnet_status_set);                  /* (sp += 1) */
 	lua_setfield(L, -2, "__newindex");                        /* (sp -= 1) */
+	lua_pushcfunction(L, magnet_status_pairs);                /* (sp += 1) */
+	lua_setfield(L, -2, "__pairs");                           /* (sp -= 1) */
 	lua_setmetatable(L, -2); /* tie the metatable to request     (sp -= 1) */
 	lua_setfield(L, -2, "status"); /* content = {}               (sp -= 1) */
 
@@ -784,6 +970,11 @@ static handler_t magnet_attract(server *srv, connection *con, plugin_data *p, bu
 
 	lua_setfield(L, -2, "lighty"); /* lighty.*                   (sp -= 1) */
 
+	/* override the default pairs() function to our __pairs capable version */
+	lua_getglobal(L, "pairs"); /* push original pairs()          (sp += 1) */
+	lua_pushcclosure(L, magnet_pairs, 1);
+	lua_setfield(L, -2, "pairs");                             /* (sp -= 1) */
+
 	lua_newtable(L); /* the meta-table for the new env           (sp += 1) */
 	lua_pushvalue(L, LUA_GLOBALSINDEX);                       /* (sp += 1) */
 	lua_setfield(L, -2, "__index"); /* { __index = _G }          (sp -= 1) */
@@ -792,7 +983,9 @@ static handler_t magnet_attract(server *srv, connection *con, plugin_data *p, bu
 
 	lua_setfenv(L, -2); /* on the stack should be a modified env (sp -= 1) */
 
-	if (lua_pcall(L, 0, 1, 0)) {
+	errfunc = push_traceback(L, 0);
+	if (lua_pcall(L, 0, 1, errfunc)) {
+		lua_remove(L, errfunc);
 		log_error_write(srv, __FILE__, __LINE__,
 			"ss",
 			"lua_pcall():",
@@ -806,6 +999,7 @@ static handler_t magnet_attract(server *srv, connection *con, plugin_data *p, bu
 
 		return HANDLER_FINISHED;
 	}
+	lua_remove(L, errfunc);
 
 	/* we should have the function-copy and the return value on the stack */
 	assert(lua_gettop(L) == 2);

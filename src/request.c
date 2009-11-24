@@ -1,3 +1,7 @@
+#include "request.h"
+#include "keyvalue.h"
+#include "log.h"
+
 #include <sys/stat.h>
 
 #include <limits.h>
@@ -5,10 +9,6 @@
 #include <string.h>
 #include <stdio.h>
 #include <ctype.h>
-
-#include "request.h"
-#include "keyvalue.h"
-#include "log.h"
 
 static int request_check_hostname(server *srv, connection *con, buffer *host) {
 	enum { DOMAINLABEL, TOPLABEL } stage = TOPLABEL;
@@ -111,7 +111,7 @@ static int request_check_hostname(server *srv, connection *con, buffer *host) {
 
 					/* check the first character at right of the dot */
 					if (is_ip == 0) {
-						if (!light_isalpha(host->ptr[i+1])) {
+						if (!light_isalnum(host->ptr[i+1])) {
 							return -1;
 						}
 					} else if (!light_isdigit(host->ptr[i+1])) {
@@ -133,7 +133,7 @@ static int request_check_hostname(server *srv, connection *con, buffer *host) {
 				}
 			} else if (i == 0) {
 				/* the first character of the hostname */
-				if (!light_isalpha(c)) {
+				if (!light_isalnum(c)) {
 					return -1;
 				}
 				label_len++;
@@ -282,6 +282,8 @@ int http_request_parse(server *srv, connection *con) {
 	char *uri = NULL, *proto = NULL, *method = NULL, con_length_set;
 	int is_key = 1, key_len = 0, is_ws_after_key = 0, in_folding;
 	char *value = NULL, *key = NULL;
+	char *reqline_host = NULL;
+	int reqline_hostlen = 0;
 
 	enum { HTTP_CONNECTION_UNSET, HTTP_CONNECTION_KEEPALIVE, HTTP_CONNECTION_CLOSE } keep_alive_set = HTTP_CONNECTION_UNSET;
 
@@ -451,7 +453,14 @@ int http_request_parse(server *srv, connection *con) {
 
 				if (0 == strncmp(uri, "http://", 7) &&
 				    NULL != (nuri = strchr(uri + 7, '/'))) {
-					/* ignore the host-part */
+					reqline_host = uri + 7;
+					reqline_hostlen = nuri - reqline_host;
+
+					buffer_copy_string_len(con->request.uri, nuri, proto - nuri - 1);
+				} else if (0 == strncmp(uri, "https://", 8) &&
+				    NULL != (nuri = strchr(uri + 8, '/'))) {
+					reqline_host = uri + 8;
+					reqline_hostlen = nuri - reqline_host;
 
 					buffer_copy_string_len(con->request.uri, nuri, proto - nuri - 1);
 				} else {
@@ -540,8 +549,8 @@ int http_request_parse(server *srv, connection *con) {
 		con->response.keep_alive = 0;
 		con->keep_alive = 0;
 
-		log_error_write(srv, __FILE__, __LINE__, "s", "no uri specified -> 400");
 		if (srv->srvconf.log_request_header_on_error) {
+			log_error_write(srv, __FILE__, __LINE__, "s", "no uri specified -> 400");
 			log_error_write(srv, __FILE__, __LINE__, "Sb",
 							"request-header:\n",
 							con->request.request);
@@ -549,6 +558,19 @@ int http_request_parse(server *srv, connection *con) {
 		return 0;
 	}
 
+	if (reqline_host) {
+		/* Insert as host header */
+		data_string *ds;
+
+		if (NULL == (ds = (data_string *)array_get_unused_element(con->request.headers, TYPE_STRING))) {
+			ds = data_string_init();
+		}
+
+		buffer_copy_string_len(ds->key, CONST_STR_LEN("Host"));
+		buffer_copy_string_len(ds->value, reqline_host, reqline_hostlen);
+		array_insert_unique(con->request.headers, (data_unset *)ds);
+		con->request.http_host = ds->value;
+	}
 
 	for (; i < con->parse_request->used && !done; i++) {
 		char *cur = con->parse_request->ptr + i;
@@ -909,7 +931,11 @@ int http_request_parse(server *srv, connection *con) {
 									return 0;
 								}
 							} else if (cmp > 0 && 0 == (cmp = buffer_caseless_compare(CONST_BUF_LEN(ds->key), CONST_STR_LEN("Host")))) {
-								if (!con->request.http_host) {
+								if (reqline_host) {
+									/* ignore all host: headers as we got the host in the request line */
+									ds->free((data_unset*) ds);
+									ds = NULL;
+								} else if (!con->request.http_host) {
 									con->request.http_host = ds->value;
 								} else {
 									con->http_status = 400;

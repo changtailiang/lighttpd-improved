@@ -3,7 +3,79 @@
 NEWS
 ====
 
-- 1.4.23 -
+- 1.4.25 -
+  * mod_magnet: fix pairs() for normal tables and strings (fixes #1307)
+  * mod_magnet: add traceback for printing lua errors
+  * mod_rewrite: fix compile error if compiled without pcre
+  * disable warning "CLOSE-read" (fixes #2091)
+  * mod_rrdtool: fix creating file if it doesn't exist (#1788)
+  * reset tlsext_server_name in connection_reset - fixes random hostnames in the $HTTP["host"] conditional
+  * export some SSL_CLIENT_* vars for client cert validation (fixes #1288, thx presbrey)
+  * mod_fastcgi: fix mod_fastcgi packet parsing
+  * mod_fastcgi: Don't reconnect after connect() succeeded (fixes #2096)
+  * Fix configure.ac to allow autoreconf, also enables make V=0
+
+- 1.4.24 - 2009-10-25
+  * Add T_CONFIG_INT for bigger integers from the config (needed for #1966)
+  * Use unsigned int (and T_CONFIG_INT) for max_request_size
+  * Use unsigned int for secdownload.timeout (fixes #1966)
+  * Keep url/host values from connection to display information while keep-alive in mod_status (fixes #1202)
+  * Add server.breakagelog, a "special" stderr (fixes #1863)
+  * Fix config evaluation for debug.log-timeouts option (#1529)
+  * Add "cgi.execute-x-only" to mod_cgi, requires +x for cgi scripts (fixes #2013)
+  * Fix FD_SETSIZE comparision warnings
+  * Add "lua-5.1" to searched pkg-config names for lua
+  * Fix unused function webdav_lockdiscovery in mod_webdav
+  * cmake: Fix crypt lib check
+  * cmake: Add -export-dynamic to link flags, fixes build on FreeBSD
+  * Set FD_CLOEXEC for bound sockets before pipe-logger forks (fixes #2026)
+  * Reset ignored signals to SIG_DFL before exec() in fastcgi/scgi (fixes #2029)
+  * Show "no uri specified -> 400" error only when "debug.log-request-header-on-error" is enabled (fixes #2030)
+  * Fix hanging connection in mod_scgi (fixes #2024)
+  * Allow digits in hostnames in more places (fixes #1148)
+  * Use connection_reset instead of handle_request_done for cleanup callbacks
+  * Change mod_expire to append Cache-Control instead of overwriting it (fixes #1997)
+  * Allow all comparisons for $SERVER["socket"] - only bind for "=="
+  * Remove strptime failed message (fixes #2031)
+  * Fix issues found with clang analyzer
+  * Try to fix server.tag issue with localized svnversion
+  * Fix handling network-write return values (#2024)
+  * Use disable-time in fastcgi for all disables after errors, default is 1sec (fixes #2040)
+  * Remove adaptive spawning code from fastcgi (was disabled for a long time)
+  * Allow mod_mysql_vhost to use stored procedures (fixes #2011, thx Ben Brown)
+  * Fix ipv6 in mod_proxy (fixes #2043)
+  * Print errors from include_shell to stderr
+  * Set tm.tm_isdst = 0 before mktime() (fixes #2047)
+  * Use linux-epoll by default if available (fixes #2021, thx Olaf van der Spek)
+  * Print an error if you use too many captures in a regex pattern (fixes #2059)
+  * Combine Cache-Control header value in mod_expire to existing HTTP header if header already added by other modules (fixes #2068)
+  * Remember keep-alive-idle in separate variable (fixes #1988)
+  * Fix header inclusion order, always include "config.h" before any system header
+  * mod_webdav: Patch to skip login information for domain part of Destination field (fixes #1793)
+  * mod_webdav: Delete old properties before updating new for MOVE (fixes #1317)
+  * Read hostname from absolute uris in the request line (fixes #1937)
+  * mod_fastcgi: don't disable backend if disable-time is 0 (fixes #1825)
+  * mod_compress: match partial+full content-type (fixes #1552)
+  * mod_fastcgi: fix is_local detection, respawn backends if bin-path is set (fixes #897)
+  * Fix linger-on-close behaviour to avoid rare failure conditions (was r2636, fixes #657)
+  * mod_fastcgi: restart local procs immediately after they terminated, fix local procs handling
+  * Fix segfault on invalid config "duplicate else conditions" (fixes #2065)
+  * mod_usertrack: Use T_CONFIG_INT for max-age, solves range problem (#1455)
+  * mod_accesslog: configurable timestamp logging (fixes #1479)
+  * always define _GNU_SOURCE
+  * Add some iterators for mod_magnet (fixes #1307)
+  * Fix close_timeout_ts trigger (should finally fix lingering close)
+  * mod_rewrite: add url.rewrite-[repeat-]if-not-file to rewrite if file doesn't exist or is not a regular file (fixes #985, thx lucas aerbeydt)
+  * Add TLS servername indication (SNI) support (fixes #386, thx Peter Colberg <peter@colberg.org>)
+  * Add SSL Client Certificate verification (#1288)
+  * mod_fastcgi: Fix host->active_procs counter, return 503 if connect wasn't successful after 5 tries (fixes #1825)
+  * mod_accesslog: escape special characters (fixes #1551, thx icy)
+  * fix mod_webdav crash from #1793 (fixes #2084, thx hiroya)
+  * Don't print ssl error if client didn't support TLS SNI
+  * Fix linger close timeout handling, drop timeout to 5 seconds (fixes #2086)
+  * Fix broken return values from int to enum in mod_fastcgi
+
+- 1.4.23 - 2009-06-19
   * Added some extra warning options in cmake and fix the resulting warnings (unused/static functions)
   * New lighttpd man page (moved it to section 8) (fixes #1875)
   * Create rrd file for empty rrdfile in mod_rrdtool (#1788)

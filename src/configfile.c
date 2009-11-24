@@ -1,3 +1,12 @@
+#include "server.h"
+#include "log.h"
+#include "stream.h"
+#include "plugin.h"
+
+#include "configparser.h"
+#include "configfile.h"
+#include "proc_open.h"
+
 #include <sys/stat.h>
 
 #include <stdlib.h>
@@ -9,18 +18,6 @@
 #include <ctype.h>
 #include <limits.h>
 #include <assert.h>
-
-#include "server.h"
-#include "log.h"
-#include "stream.h"
-#include "plugin.h"
-#ifdef USE_LICENSE
-#include "license.h"
-#endif
-
-#include "configparser.h"
-#include "configfile.h"
-#include "proc_open.h"
 
 
 static int config_insert(server *srv) {
@@ -42,12 +39,12 @@ static int config_insert(server *srv) {
 
 		{ "server.event-handler",        NULL, T_CONFIG_STRING, T_CONFIG_SCOPE_SERVER },      /* 10 */
 		{ "server.pid-file",             NULL, T_CONFIG_STRING, T_CONFIG_SCOPE_SERVER },      /* 11 */
-		{ "server.max-request-size",     NULL, T_CONFIG_SHORT, T_CONFIG_SCOPE_CONNECTION },   /* 12 */
+		{ "server.max-request-size",     NULL, T_CONFIG_INT, T_CONFIG_SCOPE_CONNECTION },     /* 12 */
 		{ "server.max-worker",           NULL, T_CONFIG_SHORT, T_CONFIG_SCOPE_SERVER },       /* 13 */
 		{ "server.document-root",        NULL, T_CONFIG_STRING, T_CONFIG_SCOPE_CONNECTION },  /* 14 */
-		{ "server.force-lowercase-filenames", NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_SERVER },   /* 15 */
+		{ "server.force-lowercase-filenames", NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_SERVER },/* 15 */
 		{ "debug.log-condition-handling", NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_SERVER },    /* 16 */
-		{ "server.max-keep-alive-requests", NULL, T_CONFIG_SHORT, T_CONFIG_SCOPE_CONNECTION }, /* 17 */
+		{ "server.max-keep-alive-requests", NULL, T_CONFIG_SHORT, T_CONFIG_SCOPE_CONNECTION },/* 17 */
 		{ "server.name",                 NULL, T_CONFIG_STRING, T_CONFIG_SCOPE_CONNECTION },  /* 18 */
 		{ "server.max-keep-alive-idle",  NULL, T_CONFIG_SHORT, T_CONFIG_SCOPE_CONNECTION },   /* 19 */
 
@@ -91,12 +88,18 @@ static int config_insert(server *srv) {
 		{ "server.core-files",           NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION }, /* 46 */
 		{ "ssl.cipher-list",             NULL, T_CONFIG_STRING, T_CONFIG_SCOPE_SERVER },      /* 47 */
 		{ "ssl.use-sslv2",               NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION }, /* 48 */
-		{ "etag.use-inode",              NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_SERVER }, /* 49 */
-		{ "etag.use-mtime",              NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_SERVER }, /* 50 */
-		{ "etag.use-size",               NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_SERVER }, /* 51 */
+		{ "etag.use-inode",              NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_SERVER },     /* 49 */
+		{ "etag.use-mtime",              NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_SERVER },     /* 50 */
+		{ "etag.use-size",               NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_SERVER },     /* 51 */
 		{ "server.reject-expect-100-with-417",  NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_SERVER }, /* 52 */
 		{ "debug.log-timeouts",          NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION }, /* 53 */
-		{ "server.defer-accept",         NULL, T_CONFIG_SHORT, T_CONFIG_SCOPE_CONNECTION },     /* 54 */
+		{ "server.defer-accept",         NULL, T_CONFIG_SHORT, T_CONFIG_SCOPE_CONNECTION },   /* 54 */
+		{ "server.breakagelog",          NULL, T_CONFIG_STRING, T_CONFIG_SCOPE_SERVER },      /* 55 */
+		{ "ssl.verifyclient.activate",   NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_SERVER },     /* 56 */
+		{ "ssl.verifyclient.enforce",    NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_SERVER },     /* 57 */
+		{ "ssl.verifyclient.depth",      NULL, T_CONFIG_SHORT,   T_CONFIG_SCOPE_SERVER },     /* 58 */
+		{ "ssl.verifyclient.username",   NULL, T_CONFIG_STRING,  T_CONFIG_SCOPE_SERVER },     /* 59 */
+		{ "ssl.verifyclient.exportcert", NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_SERVER },     /* 60 */
 		{ "server.host",                 "use server.bind instead", T_CONFIG_DEPRECATED, T_CONFIG_SCOPE_UNSET },
 		{ "server.docroot",              "use server.document-root instead", T_CONFIG_DEPRECATED, T_CONFIG_SCOPE_UNSET },
 		{ "server.virtual-root",         "load mod_simple_vhost and use simple-vhost.server-root instead", T_CONFIG_DEPRECATED, T_CONFIG_SCOPE_UNSET },
@@ -139,6 +142,8 @@ static int config_insert(server *srv) {
 	cv[43].destination = &(srv->srvconf.max_conns);
 	cv[12].destination = &(srv->srvconf.max_request_size);
 	cv[52].destination = &(srv->srvconf.reject_expect_100_with_417);
+	cv[55].destination = srv->srvconf.breakagelog_file;
+
 	srv->config_storage = calloc(1, srv->config_context->used * sizeof(specific_config *));
 
 	assert(srv->config_storage);
@@ -179,6 +184,11 @@ static int config_insert(server *srv) {
 		s->global_kbytes_per_second = 0;
 		s->global_bytes_per_second_cnt = 0;
 		s->global_bytes_per_second_cnt_ptr = &s->global_bytes_per_second_cnt;
+		s->ssl_verifyclient = 0;
+		s->ssl_verifyclient_enforce = 1;
+		s->ssl_verifyclient_username = buffer_init();
+		s->ssl_verifyclient_depth = 9;
+		s->ssl_verifyclient_export_cert = 0;
 
 		cv[2].destination = s->errorfile_prefix;
 
@@ -224,6 +234,13 @@ static int config_insert(server *srv) {
 		cv[49].destination = &(s->etag_use_inode);
 		cv[50].destination = &(s->etag_use_mtime);
 		cv[51].destination = &(s->etag_use_size);
+
+		/* ssl.verify */
+		cv[56].destination = &(s->ssl_verifyclient);
+		cv[57].destination = &(s->ssl_verifyclient_enforce);
+		cv[58].destination = &(s->ssl_verifyclient_depth);
+		cv[59].destination = s->ssl_verifyclient_username;
+		cv[60].destination = &(s->ssl_verifyclient_export_cert);
 
 		srv->config_storage[i] = s;
 
@@ -290,19 +307,29 @@ int config_setup_connection(server *srv, connection *con) {
 	PATCH(log_condition_handling);
 	PATCH(log_file_not_found);
 	PATCH(log_ssl_noise);
+	PATCH(log_timeouts);
 
 	PATCH(range_requests);
 	PATCH(force_lowercase_filenames);
 	PATCH(is_ssl);
 
 	PATCH(ssl_pemfile);
+#ifdef USE_OPENSSL
+	PATCH(ssl_ctx);
+#endif
 	PATCH(ssl_ca_file);
 	PATCH(ssl_cipher_list);
 	PATCH(ssl_use_sslv2);
 	PATCH(etag_use_inode);
 	PATCH(etag_use_mtime);
 	PATCH(etag_use_size);
- 
+
+	PATCH(ssl_verifyclient);
+	PATCH(ssl_verifyclient_enforce);
+	PATCH(ssl_verifyclient_depth);
+	PATCH(ssl_verifyclient_username);
+	PATCH(ssl_verifyclient_export_cert);
+
 	return 0;
 }
 
@@ -351,6 +378,9 @@ int config_patch_connection(server *srv, connection *con, comp_key_t comp) {
 				PATCH(etag_use_size);
 			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("ssl.pemfile"))) {
 				PATCH(ssl_pemfile);
+#ifdef USE_OPENSSL
+				PATCH(ssl_ctx);
+#endif
 			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("ssl.ca-file"))) {
 				PATCH(ssl_ca_file);
 			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("ssl.use-sslv2"))) {
@@ -391,6 +421,16 @@ int config_patch_connection(server *srv, connection *con, comp_key_t comp) {
 				PATCH(global_kbytes_per_second);
 				PATCH(global_bytes_per_second_cnt);
 				con->conf.global_bytes_per_second_cnt_ptr = &s->global_bytes_per_second_cnt;
+			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("ssl.verifyclient.activate"))) {
+				PATCH(ssl_verifyclient);
+			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("ssl.verifyclient.enforce"))) {
+				PATCH(ssl_verifyclient_enforce);
+			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("ssl.verifyclient.depth"))) {
+				PATCH(ssl_verifyclient_depth);
+			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("ssl.verifyclient.username"))) {
+				PATCH(ssl_verifyclient_username);
+			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("ssl.verifyclient.exportcert"))) {
+				PATCH(ssl_verifyclient_export_cert);
 			}
 		}
 	}
@@ -1135,14 +1175,14 @@ int config_set_defaults(server *srv) {
 		 * - select works everywhere
 		 * - linux-* are experimental
 		 */
+#ifdef USE_LINUX_EPOLL
+		{ FDEVENT_HANDLER_LINUX_SYSEPOLL, "linux-sysepoll" },
+#endif
 #ifdef USE_POLL
 		{ FDEVENT_HANDLER_POLL,           "poll" },
 #endif
 #ifdef USE_SELECT
 		{ FDEVENT_HANDLER_SELECT,         "select" },
-#endif
-#ifdef USE_LINUX_EPOLL
-		{ FDEVENT_HANDLER_LINUX_SYSEPOLL, "linux-sysepoll" },
 #endif
 #ifdef USE_LINUX_SIGIO
 		{ FDEVENT_HANDLER_LINUX_RTSIG,    "linux-rtsig" },

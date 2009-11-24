@@ -1,18 +1,21 @@
 #ifndef _BASE_H_
 #define _BASE_H_
 
+#ifdef HAVE_CONFIG_H
+# include "config.h"
+#endif
+#include "settings.h"
+
 #include <sys/types.h>
 #include <sys/time.h>
 #include <sys/stat.h>
 
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
-
 #include <limits.h>
+
 #ifdef HAVE_STDINT_H
 # include <stdint.h>
 #endif
+
 #ifdef HAVE_INTTYPES_H
 # include <inttypes.h>
 #endif
@@ -21,7 +24,6 @@
 #include "array.h"
 #include "chunk.h"
 #include "keyvalue.h"
-#include "settings.h"
 #include "fdevent.h"
 #include "sys-socket.h"
 #include "splaytree.h"
@@ -31,6 +33,9 @@
 #if defined HAVE_LIBSSL && defined HAVE_OPENSSL_SSL_H
 # define USE_OPENSSL
 # include <openssl/ssl.h>
+# if ! defined OPENSSL_NO_TLSEXT && ! defined SSL_CTRL_SET_TLSEXT_HOSTNAME
+#  define OPENSSL_NO_TLSEXT
+# endif
 #endif
 
 #ifdef HAVE_FAM_H
@@ -79,11 +84,10 @@ typedef int socklen_t;
 # define SHUT_WR 1
 #endif
 
-#include "settings.h"
-
 typedef enum { T_CONFIG_UNSET,
 		T_CONFIG_STRING,
 		T_CONFIG_SHORT,
+		T_CONFIG_INT,
 		T_CONFIG_BOOLEAN,
 		T_CONFIG_ARRAY,
 		T_CONFIG_LOCAL,
@@ -272,6 +276,11 @@ typedef struct {
 	buffer *ssl_ca_file;
 	buffer *ssl_cipher_list;
 	unsigned short ssl_use_sslv2;
+	unsigned short ssl_verifyclient;
+	unsigned short ssl_verifyclient_enforce;
+	unsigned short ssl_verifyclient_depth;
+	buffer *ssl_verifyclient_username;
+	unsigned short ssl_verifyclient_export_cert;
 
 	unsigned short use_ipv6;
 	unsigned short defer_accept;
@@ -281,7 +290,7 @@ typedef struct {
 	unsigned short etag_use_mtime;
 	unsigned short etag_use_size;
 	unsigned short force_lowercase_filenames; /* if the FS is case-insensitive, force all files to lower-case */
-	unsigned short max_request_size;
+	unsigned int max_request_size;
 
 	unsigned short kbytes_per_second; /* connection kb/s limit */
 
@@ -363,7 +372,8 @@ typedef struct {
 	int is_readable;
 	int is_writable;
 
-	int     keep_alive;           /* only request.c can enable it, all other just disable */
+	int keep_alive;              /* only request.c can enable it, all other just disable */
+	int keep_alive_idle;         /* remember max_keep_alive_idle from config */
 
 	int file_started;
 	int file_finished;
@@ -424,6 +434,9 @@ typedef struct {
 #ifdef USE_OPENSSL
 	SSL *ssl;
 	buffer *ssl_error_want_reuse_buffer;
+# ifndef OPENSSL_NO_TLSEXT
+	buffer *tlsext_server_name;
+# endif
 #endif
 	/* etag handling */
 	etag_flags_t etag_flags;
@@ -486,6 +499,7 @@ typedef struct {
 
 	buffer *errorlog_file;
 	unsigned short errorlog_use_syslog;
+	buffer *breakagelog_file;
 
 	unsigned short dont_daemonize;
 	buffer *changeroot;
@@ -504,7 +518,7 @@ typedef struct {
 	unsigned short max_worker;
 	unsigned short max_fds;
 	unsigned short max_conns;
-	unsigned short max_request_size;
+	unsigned int max_request_size;
 
 	unsigned short log_request_header_on_error;
 	unsigned short log_state_handling;
@@ -552,7 +566,7 @@ typedef struct server {
 
 	/* the errorlog */
 	int errorlog_fd;
-	enum { ERRORLOG_STDERR, ERRORLOG_FILE, ERRORLOG_SYSLOG, ERRORLOG_PIPE } errorlog_mode;
+	enum { ERRORLOG_FILE, ERRORLOG_FD, ERRORLOG_SYSLOG, ERRORLOG_PIPE } errorlog_mode;
 	buffer *errorlog_buf;
 
 	fdevents *ev, *ev_ins;

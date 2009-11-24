@@ -13,9 +13,9 @@
 #endif
 
 #ifdef HAVE_VERSION_H
-#include "versionstamp.h"
+# include "versionstamp.h"
 #else
-#define REPO_VERSION ""
+# define REPO_VERSION ""
 #endif
 
 #define PACKAGE_DESC PACKAGE_NAME "/" PACKAGE_VERSION REPO_VERSION

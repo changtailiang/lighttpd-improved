@@ -1,6 +1,14 @@
 #ifndef _LIGHTTPD_SETTINGS_H_
 #define _LIGHTTPD_SETTINGS_H_
 
+#ifndef _GNU_SOURCE
+# define _GNU_SOURCE
+#endif
+
+#ifndef __USE_GNU
+# define __USE_GNU /* a hack in my eyes, <fcntl.h> F_SETSIG should work with _GNU_SOURCE */
+#endif
+
 #define BV(x) (1 << x)
 
 #define INET_NTOP_CACHE_MAX 4
@@ -32,6 +40,7 @@ typedef enum { HANDLER_UNSET,
 		HANDLER_WAIT_FOR_FD
 } handler_t;
 
+#define HTTP_LINGER_TIMEOUT 5
 
 /* we use it in a enum */
 #ifdef TRUE

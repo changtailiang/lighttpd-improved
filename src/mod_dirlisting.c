@@ -1,13 +1,3 @@
-#include <ctype.h>
-#include <stdlib.h>
-#include <string.h>
-#include <dirent.h>
-#include <assert.h>
-#include <errno.h>
-#include <stdio.h>
-#include <unistd.h>
-#include <time.h>
-
 #include "base.h"
 #include "log.h"
 #include "buffer.h"
@@ -17,6 +7,16 @@
 #include "response.h"
 #include "stat_cache.h"
 #include "stream.h"
+
+#include <ctype.h>
+#include <stdlib.h>
+#include <string.h>
+#include <dirent.h>
+#include <assert.h>
+#include <errno.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <time.h>
 
 /**
  * this is a dirlisting for a lighttpd plugin
@@ -198,7 +198,7 @@ static int parse_config_entry(server *srv, plugin_config *s, array *ca, const ch
 	data_unset *du;
 
 	if (NULL != (du = array_get_element(ca, option))) {
-		data_array *da = (data_array *)du;
+		data_array *da;
 		size_t j;
 
 		if (du->type != TYPE_ARRAY) {

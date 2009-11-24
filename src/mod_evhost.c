@@ -1,11 +1,11 @@
-#include <string.h>
-#include <errno.h>
-#include <ctype.h>
-
 #include "plugin.h"
 #include "log.h"
 #include "response.h"
 #include "stat_cache.h"
+
+#include <string.h>
+#include <errno.h>
+#include <ctype.h>
 
 typedef struct {
 	/* unparsed pieces */
@@ -213,7 +213,7 @@ static int mod_evhost_parse_host(connection *con,array *host) {
 		if (colon != ptr) {
 			ds = data_string_init();
 			buffer_copy_string_len(ds->key,CONST_STR_LEN("%"));
-			buffer_append_long(ds->key, i++);
+			buffer_append_long(ds->key, i /* ++ */);
 			buffer_copy_string_len(ds->value,ptr,colon-ptr);
 
 			array_insert_unique(host,(data_unset *)ds);
@@ -294,10 +294,10 @@ static handler_t mod_evhost_uri_handler(server *srv, connection *con, void *p_d)
 				char *colon = strchr(con->uri.authority->ptr, ':');
 
 				if(colon == NULL) {
-					buffer_append_string_buffer(p->tmp_buf, con->uri.authority); // adds fqdn
+					buffer_append_string_buffer(p->tmp_buf, con->uri.authority); /* adds fqdn */
 				} else {
 					/* strip the port out of the authority-part of the URI scheme */
-					buffer_append_string_len(p->tmp_buf, con->uri.authority->ptr, colon - con->uri.authority->ptr); // adds fqdn
+					buffer_append_string_len(p->tmp_buf, con->uri.authority->ptr, colon - con->uri.authority->ptr); /* adds fqdn */
 				}
 			} else if (NULL != (ds = (data_string *)array_get_element(parsed_host,p->conf.path_pieces[i]->ptr))) {
 				if (ds->value->used) {
