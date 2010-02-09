@@ -747,6 +747,8 @@ static int cgi_create_env(server *srv, connection *con, plugin_data *p, buffer *
 	}
 
 	if (pipe(from_cgi_fds)) {
+		close(to_cgi_fds[0]);
+		close(to_cgi_fds[1]);
 		log_error_write(srv, __FILE__, __LINE__, "ss", "pipe failed:", strerror(errno));
 		return -1;
 	}
@@ -1035,6 +1037,10 @@ static int cgi_create_env(server *srv, connection *con, plugin_data *p, buffer *
 	case -1:
 		/* error */
 		log_error_write(srv, __FILE__, __LINE__, "ss", "fork failed:", strerror(errno));
+		close(from_cgi_fds[0]);
+		close(from_cgi_fds[1]);
+		close(to_cgi_fds[0]);
+		close(to_cgi_fds[1]);
 		return -1;
 		break;
 	default: {
@@ -1181,6 +1187,7 @@ static int mod_cgi_patch_connection(server *srv, connection *con, plugin_data *p
 	plugin_config *s = p->config_storage[0];
 
 	PATCH(cgi);
+	PATCH(execute_x_only);
 
 	/* skip the first, the global context */
 	for (i = 1; i < srv->config_context->used; i++) {

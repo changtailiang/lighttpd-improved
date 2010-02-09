@@ -433,7 +433,6 @@ typedef struct {
 
 #ifdef USE_OPENSSL
 	SSL *ssl;
-	buffer *ssl_error_want_reuse_buffer;
 # ifndef OPENSSL_NO_TLSEXT
 	buffer *tlsext_server_name;
 # endif
