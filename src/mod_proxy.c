@@ -1371,14 +1371,13 @@ static handler_t mod_proxy_check_extension(server *srv, connection *con, void *p
 
 	/* check if extension matches */
 	for (k = 0; k < p->conf.extensions->used; k++) {
-		data_array *ext = NULL;
 		size_t ct_len;
 
-		ext = (data_array *)p->conf.extensions->data[k];
+		extension = (data_array *)p->conf.extensions->data[k];
 
-		if (ext->key->used == 0) continue;
+		if (extension->key->used == 0) continue;
 
-		ct_len = ext->key->used - 1;
+		ct_len = extension->key->used - 1;
 
 		if (s_len < ct_len) continue;
 
