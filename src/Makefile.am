@@ -276,6 +276,10 @@ mod_accesslog_la_SOURCES = mod_accesslog.c
 mod_accesslog_la_LDFLAGS = -module -export-dynamic -avoid-version -no-undefined
 mod_accesslog_la_LIBADD = $(common_libadd)
 
+lib_LTLIBRARIES += mod_mimemagic.la
+mod_mimemagic_la_SOURCES = mod_mimemagic.c
+mod_mimemagic_la_LDFLAGS = -module -export-dynamic -avoid-version -no-undefined
+mod_mimemagic_la_LIBADD = $(common_libadd)
 
 hdr = server.h buffer.h network.h log.h keyvalue.h \
       response.h request.h fastcgi.h chunk.h \

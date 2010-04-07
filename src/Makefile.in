@@ -146,6 +146,13 @@ mod_cache_la_OBJECTS = $(am_mod_cache_la_OBJECTS)
 mod_cache_la_LINK = $(LIBTOOL) --tag=CC $(AM_LIBTOOLFLAGS) \
 	$(LIBTOOLFLAGS) --mode=link $(CCLD) $(AM_CFLAGS) $(CFLAGS) \
 	$(mod_cache_la_LDFLAGS) $(LDFLAGS) -o $@
+mod_mimemagic_la_DEPENDENCIES = $(am__DEPENDENCIES_1) \
+	$(am__DEPENDENCIES_2)
+am_mod_mimemagic_la_OBJECTS = mod_mimemagic.lo
+mod_mimemagic_la_OBJECTS = $(am_mod_mimemagic_la_OBJECTS)
+mod_mimemagic_la_LINK = $(LIBTOOL) --tag=CC $(AM_LIBTOOLFLAGS) \
+	$(LIBTOOLFLAGS) --mode=link $(CCLD) $(AM_CFLAGS) $(CFLAGS) \
+	$(mod_mimemagic_la_LDFLAGS) $(LDFLAGS) -o $@
 mod_cgi_la_DEPENDENCIES = $(am__DEPENDENCIES_2)
 am_mod_cgi_la_OBJECTS = mod_cgi.lo
 mod_cgi_la_OBJECTS = $(am_mod_cgi_la_OBJECTS)
@@ -424,7 +431,8 @@ SOURCES = $(liblightcomp_la_SOURCES) $(mod_access_la_SOURCES) \
 	$(mod_ssi_la_SOURCES) $(mod_staticfile_la_SOURCES) \
 	$(mod_status_la_SOURCES) $(mod_trigger_b4_dl_la_SOURCES) \
 	$(mod_userdir_la_SOURCES) $(mod_usertrack_la_SOURCES) \
-	$(mod_webdav_la_SOURCES) $(lemon_SOURCES) $(lighttpd_SOURCES) \
+	$(mod_webdav_la_SOURCES) $(mod_mimemagic_la_SOURCES) \
+	$(lemon_SOURCES) $(lighttpd_SOURCES) \
 	$(lighttpd_angel_SOURCES) $(proc_open_SOURCES) \
 	$(spawn_fcgi_SOURCES)
 DIST_SOURCES = $(am__liblightcomp_la_SOURCES_DIST) \
@@ -445,6 +453,7 @@ DIST_SOURCES = $(am__liblightcomp_la_SOURCES_DIST) \
 	$(mod_staticfile_la_SOURCES) $(mod_status_la_SOURCES) \
 	$(mod_trigger_b4_dl_la_SOURCES) $(mod_userdir_la_SOURCES) \
 	$(mod_usertrack_la_SOURCES) $(mod_webdav_la_SOURCES) \
+	$(mod_mimemagic_la_SOURCES) \
 	$(lemon_SOURCES) $(am__lighttpd_SOURCES_DIST) \
 	$(lighttpd_angel_SOURCES) $(proc_open_SOURCES) \
 	$(spawn_fcgi_SOURCES)
@@ -635,7 +644,7 @@ lib_LTLIBRARIES = $(am__append_1) mod_flv_streaming.la mod_evasive.la \
 	mod_secdownload.la mod_expire.la mod_evhost.la \
 	mod_simple_vhost.la mod_fastcgi.la mod_extforward.la \
 	mod_access.la mod_compress.la mod_auth.la mod_rewrite.la \
-	mod_redirect.la mod_status.la mod_accesslog.la
+	mod_redirect.la mod_status.la mod_accesslog.la mod_mimemagic.la
 @NO_RDYNAMIC_TRUE@liblightcomp_la_SOURCES = $(common_src)
 @NO_RDYNAMIC_TRUE@liblightcomp_la_CFLAGS = $(AM_CFLAGS)
 @NO_RDYNAMIC_TRUE@liblightcomp_la_LDFLAGS = -avoid-version -no-undefined
@@ -662,6 +671,9 @@ mod_trigger_b4_dl_la_LIBADD = $(GDBM_LIB) $(MEMCACHE_LIB) $(PCRE_LIB) $(common_l
 mod_cache_la_SOURCES = mod_cache.c
 mod_cache_la_LDFLAGS = -module -export-dynamic -avoid-version -no-undefined
 mod_cache_la_LIBADD = $(Z_LIB) $(common_libadd)
+mod_mimemagic_la_SOURCES = mod_mimemagic.c
+mod_mimemagic_la_LDFLAGS = -module -export-dynamic -avoid-version -no-undefined
+mod_mimemagic_la_LIBADD = $(common_libadd)
 mod_mysql_vhost_la_SOURCES = mod_mysql_vhost.c
 mod_mysql_vhost_la_LDFLAGS = -module -export-dynamic -avoid-version -no-undefined
 mod_mysql_vhost_la_LIBADD = $(MYSQL_LIBS) $(common_libadd)
@@ -856,6 +868,8 @@ mod_auth.la: $(mod_auth_la_OBJECTS) $(mod_auth_la_DEPENDENCIES)
 	$(mod_auth_la_LINK) -rpath $(libdir) $(mod_auth_la_OBJECTS) $(mod_auth_la_LIBADD) $(LIBS)
 mod_cache.la: $(mod_cache_la_OBJECTS) $(mod_cache_la_DEPENDENCIES) 
 	$(mod_cache_la_LINK) -rpath $(libdir) $(mod_cache_la_OBJECTS) $(mod_cache_la_LIBADD) $(LIBS)
+mod_mimemagic.la: $(mod_mimemagic_la_OBJECTS) $(mod_mimemagic_la_DEPENDENCIES) 
+	$(mod_mimemagic_la_LINK) -rpath $(libdir) $(mod_mimemagic_la_OBJECTS) $(mod_mimemagic_la_LIBADD) $(LIBS)
 mod_cgi.la: $(mod_cgi_la_OBJECTS) $(mod_cgi_la_DEPENDENCIES) 
 	$(mod_cgi_la_LINK) -rpath $(libdir) $(mod_cgi_la_OBJECTS) $(mod_cgi_la_LIBADD) $(LIBS)
 mod_compress.la: $(mod_compress_la_OBJECTS) $(mod_compress_la_DEPENDENCIES) 
@@ -1078,6 +1092,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/mod_alias.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/mod_auth.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/mod_cache.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/mod_mimemagic.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/mod_cgi.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/mod_compress.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/mod_dirlisting.Plo@am__quote@
