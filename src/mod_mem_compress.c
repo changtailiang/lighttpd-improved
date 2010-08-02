@@ -735,8 +735,8 @@ mod_mem_compress_uri_handler(server *srv, connection *con, void *p_d)
 		response_header_overwrite(srv, con, CONST_STR_LEN("ETag"), CONST_BUF_LEN(con->physical.etag));
 
 		/* perhaps we don't even have to compress the file as the browser still has the current version */
-       	if (HANDLER_FINISHED == http_response_handle_cachable(srv, con, mtime, con->physical.etag))
-	       	return HANDLER_FINISHED;
+		if (HANDLER_FINISHED == http_response_handle_cachable(srv, con, mtime, con->physical.etag))
+			return HANDLER_FINISHED;
 
 		/* check cache in memory */
 		hash = hashme(con->physical.path);
@@ -829,15 +829,15 @@ mod_mem_compress_uri_handler(server *srv, connection *con, void *p_d)
 int
 mod_mem_compress_plugin_init(plugin *p)
 {
-	p->version     = LIGHTTPD_VERSION_ID;
-	p->name        = buffer_init_string("mem_compress");
+	p->version = LIGHTTPD_VERSION_ID;
+	p->name = buffer_init_string("mem_compress");
 	
-	p->init        = mod_mem_compress_init;
+	p->init = mod_mem_compress_init;
 	p->set_defaults = mod_mem_compress_setdefaults;
-	p->handle_physical  = mod_mem_compress_uri_handler;
-	p->cleanup     = mod_mem_compress_free;
+	p->handle_subrequest_start = mod_mem_compress_uri_handler;
+	p->cleanup = mod_mem_compress_free;
 	
-	p->data        = NULL;
+	p->data = NULL;
 	
 	return 0;
 }
